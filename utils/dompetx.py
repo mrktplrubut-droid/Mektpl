@@ -9,12 +9,18 @@ import httpx
 
 from config import DOMPETX_API_KEY
 
+
 logger = logging.getLogger(__name__)
+
 
 BASE_URL = "https://api.dompetx.com"
 
 
 class DompetX:
+
+    # ==================================================
+    # HEADERS / SIGNATURE
+    # ==================================================
 
     @staticmethod
     def _headers(body: dict | None = None):
@@ -40,9 +46,9 @@ class DompetX:
             "Idempotency-Key": str(uuid.uuid4()),
         }
 
-    # ===================================
+    # ==================================================
     # CREATE PAYMENT
-    # ===================================
+    # ==================================================
 
     @staticmethod
     async def create_payment(
@@ -51,11 +57,13 @@ class DompetX:
         customer_name: str = "Customer",
     ):
 
-        reference = f"FILE-{uuid.uuid4().hex[:16]}"
+        reference = (
+            f"FILE-{uuid.uuid4().hex[:16]}"
+        )
 
         body = {
             "method": "QRIS",
-            "amount": amount,
+            "amount": int(amount),
             "currency": "IDR",
             "reference": reference,
             "settlementSpeed": "standard",
@@ -67,7 +75,9 @@ class DompetX:
 
         try:
 
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(
+                timeout=30
+            ) as client:
 
                 response = await client.post(
                     f"{BASE_URL}/v1/payments",
@@ -75,88 +85,250 @@ class DompetX:
                     headers=DompetX._headers(body),
                 )
 
-            logger.info(response.text)
+            logger.info(
+                "DOMPETX CREATE RESPONSE: %s",
+                response.text
+            )
 
             response.raise_for_status()
 
             data = response.json()
 
-            payment_id = data["id"]
+            payment_id = data.get("id")
+
+            if not payment_id:
+
+                logger.error(
+                    "DOMPETX PAYMENT ID TIDAK ADA: %s",
+                    data
+                )
+
+                return None
+
+            # ==========================================
+            # QR DATA
+            # ==========================================
+
+            qr_data = data.get(
+                "qrData"
+            ) or {}
+
+            qr_string = qr_data.get(
+                "qrString"
+            )
+
+            qr_image = qr_data.get(
+                "qrImage"
+            )
+
+            # Fallback kalau API mengirim paymentUrl
+            payment_url = data.get(
+                "paymentUrl"
+            )
+
+            if not qr_string and not qr_image:
+
+                logger.error(
+                    "DOMPETX QR DATA TIDAK DITEMUKAN: %s",
+                    data
+                )
 
             return {
                 "payment_id": payment_id,
+
                 "invoice_id": payment_id,
-                "reference": reference,
-                "status": data.get("status"),
-                "amount": data.get("amount", amount),
-                "qr_url": f"{BASE_URL}/v1/qr/{payment_id}",
+
+                "reference": data.get(
+                    "reference",
+                    reference
+                ),
+
+                "provider_payment_id": data.get(
+                    "providerPaymentId"
+                ),
+
+                "status": str(
+                    data.get(
+                        "status",
+                        "pending"
+                    )
+                ).lower(),
+
+                "amount": data.get(
+                    "amount",
+                    amount
+                ),
+
+                "fee": data.get(
+                    "fee",
+                    0
+                ),
+
+                "additional_fee": data.get(
+                    "additionalFee",
+                    0
+                ),
+
+                "total_amount": data.get(
+                    "totalAmount",
+                    amount
+                ),
+
+                "currency": data.get(
+                    "currency",
+                    "IDR"
+                ),
+
+                # QRIS EMV STRING
+                "qr_string": qr_string,
+
+                # URL gambar QR resmi DompetX
+                "qr_image": qr_image,
+
+                # URL checkout
+                "payment_url": payment_url,
+
+                "expires_at": data.get(
+                    "expiresAt"
+                ),
+
+                "raw": data,
             }
 
-        except Exception:
-            logger.exception("DOMPETX CREATE PAYMENT ERROR")
+        except httpx.HTTPStatusError as e:
+
+            logger.error(
+                "DOMPETX CREATE HTTP ERROR: %s | %s",
+                e,
+                e.response.text
+                if e.response
+                else ""
+            )
+
             return None
 
-    # ===================================
+        except Exception:
+
+            logger.exception(
+                "DOMPETX CREATE PAYMENT ERROR"
+            )
+
+            return None
+
+    # ==================================================
     # CHECK PAYMENT
-    # ===================================
+    # ==================================================
 
     @staticmethod
-    async def check_payment(payment_id: str):
+    async def check_payment(
+        payment_id: str
+    ):
 
         body = {}
 
         try:
 
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(
+                timeout=30
+            ) as client:
 
                 response = await client.get(
                     f"{BASE_URL}/v1/payments/check-status/{payment_id}",
                     headers=DompetX._headers(body),
                 )
 
-            logger.info(response.text)
+            logger.info(
+                "DOMPETX CHECK RESPONSE: %s",
+                response.text
+            )
 
             response.raise_for_status()
 
             data = response.json()
 
+            status = str(
+                data.get(
+                    "status",
+                    ""
+                )
+            ).lower()
+
             return {
                 "payment_id": payment_id,
-                "status": str(
-                    data.get("status", "")
-                ).lower(),
+
+                "status": status,
+
                 "raw": data,
             }
 
-        except Exception:
-            logger.exception("DOMPETX CHECK PAYMENT ERROR")
+        except httpx.HTTPStatusError as e:
+
+            logger.error(
+                "DOMPETX CHECK HTTP ERROR: %s | %s",
+                e,
+                e.response.text
+                if e.response
+                else ""
+            )
+
             return None
 
-    # ===================================
+        except Exception:
+
+            logger.exception(
+                "DOMPETX CHECK PAYMENT ERROR"
+            )
+
+            return None
+
+    # ==================================================
     # CANCEL PAYMENT
-    # ===================================
+    # ==================================================
 
     @staticmethod
-    async def cancel_payment(payment_id: str):
+    async def cancel_payment(
+        payment_id: str
+    ):
 
         body = {}
 
         try:
 
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(
+                timeout=30
+            ) as client:
 
                 response = await client.post(
                     f"{BASE_URL}/v1/payments/cancel/{payment_id}",
-                    headers=DompetX._headers(body),
                     json=body,
+                    headers=DompetX._headers(body),
                 )
 
-            logger.info(response.text)
+            logger.info(
+                "DOMPETX CANCEL RESPONSE: %s",
+                response.text
+            )
 
             response.raise_for_status()
 
             return response.json()
 
+        except httpx.HTTPStatusError as e:
+
+            logger.error(
+                "DOMPETX CANCEL HTTP ERROR: %s | %s",
+                e,
+                e.response.text
+                if e.response
+                else ""
+            )
+
+            return None
+
         except Exception:
-            logger.exception("DOMPETX CANCEL PAYMENT ERROR")
+
+            logger.exception(
+                "DOMPETX CANCEL PAYMENT ERROR"
+            )
+
             return None
