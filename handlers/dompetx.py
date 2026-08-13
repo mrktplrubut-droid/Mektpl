@@ -148,7 +148,7 @@ async def create_dompetx(call: CallbackQuery):
     )
 
 
-from .payment import (
+from .pay import (
     finish_payment,
     CHECK_LOCK,
 )
