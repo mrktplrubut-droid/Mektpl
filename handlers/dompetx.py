@@ -81,13 +81,117 @@ async def create_dompetx(call: CallbackQuery):
             show_alert=True
         )
 
+    user_id = call.from_user.id
+
+    # ==================================================
+    # CEK TRANSAKSI LAMA
+    # ==================================================
+
+    existing = await fetchrow(
+        """
+        SELECT *
+        FROM file_purchases
+        WHERE user_id=$1
+          AND file_code=$2
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        user_id,
+        code
+    )
+
+    # ==================================================
+    # SUDAH PERNAH BAYAR
+    # ==================================================
+
+    if existing:
+
+        if existing["status"] == "paid":
+
+            return await call.answer(
+                "✅ File ini sudah kamu beli.",
+                show_alert=True
+            )
+
+        # ==================================================
+        # MASIH PENDING
+        # ==================================================
+
+        if existing["status"] == "pending":
+
+            old_payment_id = existing["payment_id"]
+            old_qr_string = existing["qr_string"]
+
+            if old_payment_id and old_qr_string:
+
+                await call.answer(
+                    "⏳ Pembayaran sebelumnya masih aktif."
+                )
+
+                try:
+
+                    qr = qrcode.make(
+                        old_qr_string
+                    )
+
+                    buffer = BytesIO()
+
+                    qr.save(
+                        buffer,
+                        format="PNG"
+                    )
+
+                    buffer.seek(0)
+
+                    msg = await call.message.answer_photo(
+                        BufferedInputFile(
+                            buffer.getvalue(),
+                            filename="dompetx_qris.png"
+                        ),
+                        caption=(
+                            "💳 <b>PEMBAYARAN MASIH BERJALAN</b>\n\n"
+                            f"📄 File:\n"
+                            f"<b>{file['title']}</b>\n\n"
+                            f"🧾 Invoice:\n"
+                            f"<code>{old_payment_id}</code>\n\n"
+                            f"💰 Total:\n"
+                            f"<b>Rp {price:,}</b>\n\n"
+                            "📷 Silakan scan QRIS di atas.\n\n"
+                            "Jika sudah membayar, tekan "
+                            "<b>🔄 Cek Pembayaran</b>."
+                        ).replace(",", "."),
+                        parse_mode="HTML",
+                        reply_markup=dompetx_keyboard(
+                            old_payment_id
+                        )
+                    )
+
+                    return
+
+                except Exception:
+
+                    logger.exception(
+                        "DOMPETX RESEND OLD QR ERROR"
+                    )
+
+                    return await call.answer(
+                        "❌ Gagal menampilkan pembayaran lama.",
+                        show_alert=True
+                    )
+
+            # Kalau pending tetapi QR tidak tersimpan
+            return await call.answer(
+                "⏳ Masih ada pembayaran yang sedang berjalan.",
+                show_alert=True
+            )
+
+    # ==================================================
+    # BUAT PAYMENT BARU
+    # ==================================================
+
     await call.answer(
         "⏳ Membuat QRIS DompetX..."
     )
-
-    # ==============================
-    # CREATE PAYMENT
-    # ==============================
 
     payment = await DompetX.create_payment(
         amount=price,
@@ -96,84 +200,39 @@ async def create_dompetx(call: CallbackQuery):
     )
 
     if not payment:
+
         return await call.answer(
-            "❌ Gagal membuat pembayaran DompetX",
+            "❌ Gagal membuat pembayaran DompetX.",
             show_alert=True
         )
 
     payment_id = payment.get("payment_id")
 
     if not payment_id:
+
         logger.error(
             "DOMPETX PAYMENT ID KOSONG: %s",
             payment
         )
 
         return await call.answer(
-            "❌ Payment ID tidak ditemukan",
+            "❌ Payment ID tidak ditemukan.",
             show_alert=True
         )
 
-    # ==============================
+    # ==================================================
     # AMBIL QR STRING
-    # ==============================
+    # ==================================================
 
     qr_string = payment.get("qr_string")
 
     if not qr_string:
+
         logger.error(
             "DOMPETX QR STRING KOSONG: %s",
             payment
         )
 
-        return await call.answer(
-            "❌ QRIS DompetX tidak tersedia",
-            show_alert=True
-        )
-
-    # ==============================
-    # SIMPAN PURCHASE
-    # ==============================
-
-    try:
-
-        await execute(
-            """
-            INSERT INTO file_purchases
-            (
-                user_id,
-                file_code,
-                owner_id,
-                paid_price,
-                payment_id,
-                status,
-                created_at
-            )
-            VALUES
-            (
-                $1,
-                $2,
-                $3,
-                $4,
-                $5,
-                'pending',
-                NOW()
-            )
-            """,
-            call.from_user.id,
-            code,
-            file["owner_id"],
-            price,
-            payment_id
-        )
-
-    except Exception:
-
-        logger.exception(
-            "DOMPETX INSERT PURCHASE ERROR"
-        )
-
-        # Coba batalkan payment jika DB gagal
         try:
             await DompetX.cancel_payment(
                 payment_id
@@ -182,13 +241,99 @@ async def create_dompetx(call: CallbackQuery):
             pass
 
         return await call.answer(
-            "❌ Gagal menyimpan transaksi",
+            "❌ QRIS DompetX tidak tersedia.",
             show_alert=True
         )
 
-    # ==============================
-    # GENERATE QRIS
-    # ==============================
+    # ==================================================
+    # SIMPAN PURCHASE
+    # ==================================================
+
+    try:
+
+        if existing:
+
+            # Existing sebelumnya cancel/expired,
+            # gunakan row yang sama karena ada UNIQUE
+            await execute(
+                """
+                UPDATE file_purchases
+                SET
+                    owner_id=$1,
+                    paid_price=$2,
+                    payment_id=$3,
+                    status='pending',
+                    qr_string=$4,
+                    qr_message_id=NULL,
+                    qr_chat_id=NULL,
+                    created_at=NOW()
+                WHERE user_id=$5
+                  AND file_code=$6
+                """,
+                file["owner_id"],
+                price,
+                payment_id,
+                qr_string,
+                user_id,
+                code
+            )
+
+        else:
+
+            await execute(
+                """
+                INSERT INTO file_purchases
+                (
+                    user_id,
+                    file_code,
+                    owner_id,
+                    paid_price,
+                    payment_id,
+                    status,
+                    qr_string,
+                    created_at
+                )
+                VALUES
+                (
+                    $1,
+                    $2,
+                    $3,
+                    $4,
+                    $5,
+                    'pending',
+                    $6,
+                    NOW()
+                )
+                """,
+                user_id,
+                code,
+                file["owner_id"],
+                price,
+                payment_id,
+                qr_string
+            )
+
+    except Exception:
+
+        logger.exception(
+            "DOMPETX SAVE PURCHASE ERROR"
+        )
+
+        try:
+            await DompetX.cancel_payment(
+                payment_id
+            )
+        except Exception:
+            pass
+
+        return await call.answer(
+            "❌ Gagal menyimpan transaksi.",
+            show_alert=True
+        )
+
+    # ==================================================
+    # GENERATE QR
+    # ==================================================
 
     try:
 
@@ -228,13 +373,13 @@ async def create_dompetx(call: CallbackQuery):
             pass
 
         return await call.answer(
-            "❌ Gagal membuat QRIS",
+            "❌ Gagal membuat QRIS.",
             show_alert=True
         )
 
-    # ==============================
-    # SEND QR
-    # ==============================
+    # ==================================================
+    # KIRIM QR
+    # ==================================================
 
     try:
 
@@ -269,13 +414,13 @@ async def create_dompetx(call: CallbackQuery):
         )
 
         return await call.answer(
-            "❌ Gagal mengirim QRIS",
+            "❌ Gagal mengirim QRIS.",
             show_alert=True
         )
 
-    # ==============================
+    # ==================================================
     # SIMPAN MESSAGE ID
-    # ==============================
+    # ==================================================
 
     await execute(
         """
@@ -292,8 +437,9 @@ async def create_dompetx(call: CallbackQuery):
 
     logger.info(
         "DOMPETX PAYMENT CREATED | "
-        "payment_id=%s | code=%s | amount=%s",
+        "payment_id=%s | user=%s | code=%s | amount=%s",
         payment_id,
+        user_id,
         code,
         price
     )
