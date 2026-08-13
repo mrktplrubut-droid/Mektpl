@@ -5,6 +5,8 @@ import hmac
 import hashlib
 import logging
 
+from datetime import datetime
+
 import httpx
 
 from config import DOMPETX_API_KEY
@@ -16,6 +18,45 @@ BASE_URL = "https://api.dompetx.com"
 
 
 class DompetX:
+
+    # ==================================================
+    # PARSE DATETIME DOMPETX
+    # ==================================================
+
+    @staticmethod
+    def _parse_datetime(value):
+        """
+        Convert ISO datetime string dari DompetX
+        menjadi Python datetime agar kompatibel dengan
+        PostgreSQL TIMESTAMPTZ / asyncpg.
+        """
+
+        if not value:
+            return None
+
+        if isinstance(value, datetime):
+            return value
+
+        if not isinstance(value, str):
+            logger.warning(
+                "DOMPETX INVALID DATETIME TYPE: %s",
+                type(value),
+            )
+            return None
+
+        try:
+            # Contoh:
+            # 2026-08-15T13:32:18+07:00
+            return datetime.fromisoformat(
+                value.replace("Z", "+00:00")
+            )
+
+        except ValueError:
+            logger.exception(
+                "DOMPETX INVALID DATETIME: %s",
+                value,
+            )
+            return None
 
     # ==================================================
     # HEADERS / SIGNATURE
@@ -147,17 +188,19 @@ class DompetX:
                 "paymentUrl"
             )
 
-            # QR String adalah prioritas utama
+            # ==================================================
+            # QR STRING WAJIB
+            # ==================================================
+
             if not qr_string:
 
                 logger.error(
-                    "DOMPETX QR STRING KOSONG | payment=%s | data=%s",
+                    "DOMPETX QR STRING KOSONG | "
+                    "payment=%s | data=%s",
                     payment_id,
                     data,
                 )
 
-                # Payment berhasil dibuat tetapi
-                # QR tidak tersedia.
                 try:
                     await DompetX.cancel_payment(
                         payment_id
@@ -181,10 +224,19 @@ class DompetX:
             ).lower()
 
             # ==================================================
+            # EXPIRES AT
+            # ==================================================
+
+            expires_at = DompetX._parse_datetime(
+                data.get("expiresAt")
+            )
+
+            # ==================================================
             # RETURN
             # ==================================================
 
             return {
+
                 "payment_id": payment_id,
 
                 "invoice_id": payment_id,
@@ -233,36 +285,19 @@ class DompetX:
                     "IDR",
                 ),
 
-                # ==========================================
-                # QRIS EMV STRING
-                # ==========================================
-
+                # QRIS
                 "qr_string": qr_string,
 
-                # ==========================================
-                # QR IMAGE RESMI DOMPETX
-                # ==========================================
-
+                # QR image resmi
                 "qr_image": qr_image,
 
-                # ==========================================
-                # CHECKOUT URL
-                # ==========================================
-
+                # Checkout URL
                 "payment_url": payment_url,
 
-                # ==========================================
-                # EXPIRED
-                # ==========================================
+                # Python datetime
+                "expires_at": expires_at,
 
-                "expires_at": data.get(
-                    "expiresAt"
-                ),
-
-                # ==========================================
-                # RAW RESPONSE
-                # ==========================================
-
+                # Raw response
                 "raw": data,
             }
 
@@ -353,6 +388,10 @@ class DompetX:
 
                 "is_cancellable": data.get(
                     "isCancellable"
+                ),
+
+                "expires_at": DompetX._parse_datetime(
+                    data.get("expiresAt")
                 ),
 
                 "raw": data,
