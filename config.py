@@ -28,9 +28,23 @@ STORAGE_CHANNEL_ID = int(
 # =========================
 # PAYMENT
 # =========================
+
+# BayarGG (lama)
 BAYARGG_API_KEY = os.getenv("BAYARGG_API_KEY")
 BAYARGG_MERCHANT = os.getenv("BAYARGG_MERCHANT")
 BAYARGG_WEBHOOK_SECRET = os.getenv("BAYARGG_WEBHOOK_SECRET")
+
+# DompetX (baru)
+DOMPETX_API_KEY = os.getenv("DOMPETX_API_KEY")
+DOMPETX_BASE_URL = os.getenv(
+    "DOMPETX_BASE_URL",
+    "https://api.dompetx.com"
+)
+
+DOMPETX_REDIRECT_URL = os.getenv(
+    "DOMPETX_REDIRECT_URL",
+    ""
+)
 
 # =========================
 # MANUAL QR PAYMENT
@@ -103,6 +117,11 @@ if not STORAGE_CHANNEL_ID:
 if not BAYARGG_API_KEY:
     raise ValueError(
         "BAYARGG_API_KEY belum di-set"
+    )
+
+if not DOMPETX_API_KEY:
+    raise ValueError(
+        "DOMPETX_API_KEY belum di-set"
     )
 
 if not WITHDRAW_CHANNEL_ID:
