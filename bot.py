@@ -74,6 +74,7 @@ from handlers.ewallet import router as ewallet_router
 
 from handlers.pay import router as pay_router
 from handlers.cancel import router as cancel_router
+from handlers.dompetx import router as dompetx_router
 
 from handlers.withdraw import (
     withdraw_router,
@@ -121,6 +122,7 @@ dp.include_router(ewallet_router)
 
 # PAYMENT
 dp.include_router(pay_router)
+dp.include_router(dompetx_router)
 dp.include_router(cancel_router)
 
 # WITHDRAW
