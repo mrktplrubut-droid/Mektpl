@@ -19,7 +19,7 @@ from utils.redis_client import (
     safe_delete
 )
 
-from utils.bayargg import BayarGG
+from utils.dompetx import DompetX
 
 from config import (
     STORAGE_CHANNEL_ID,
