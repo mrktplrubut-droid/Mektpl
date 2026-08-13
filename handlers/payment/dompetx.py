@@ -7,6 +7,8 @@ from aiogram import Router, F
 from aiogram.types import (
     CallbackQuery,
     BufferedInputFile,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
 )
 
 from database import fetchrow, execute
@@ -15,6 +17,27 @@ from utils.dompetx import DompetX
 logger = logging.getLogger(__name__)
 
 router = Router()
+
+
+def dompetx_keyboard(payment_id):
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔄 Cek Pembayaran",
+                    callback_data=f"dompetxcheck:{payment_id}"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="❌ Batalkan",
+                    callback_data=f"dompetxcancel:{payment_id}"
+                )
+            ]
+        ]
+    )
+
 
 
 # ==================================================
@@ -120,8 +143,181 @@ async def create_dompetx(call: CallbackQuery):
         payment_id
     )
 
-    from .payment import payment_check_keyboard
-
     await msg.edit_reply_markup(
-        reply_markup=payment_check_keyboard(payment_id)
+        reply_markup=dompetx_keyboard(payment_id)
     )
+
+
+from .payment import (
+    finish_payment,
+    CHECK_LOCK,
+)
+
+
+# ==================================================
+# CHECK PAYMENT
+# ==================================================
+
+@router.callback_query(F.data.startswith("dompetxcheck:"))
+async def check_dompetx(call: CallbackQuery):
+
+    payment_id = call.data.split(":")[1]
+
+    if payment_id in CHECK_LOCK:
+        return await call.answer(
+            "⏳ Sedang diproses...",
+            show_alert=True
+        )
+
+    CHECK_LOCK.add(payment_id)
+
+    try:
+
+        await call.answer(
+            "🔄 Mengecek pembayaran..."
+        )
+
+        result = await DompetX.check_payment(
+            payment_id
+        )
+
+        if not result:
+            return await call.answer(
+                "❌ Gagal mengecek pembayaran",
+                show_alert=True
+            )
+
+        status = str(
+            result.get("status", "")
+        ).lower()
+
+        if status != "paid":
+            return await call.answer(
+                "⏳ Belum dibayar",
+                show_alert=True
+            )
+
+        purchase = await fetchrow(
+            """
+            SELECT *
+            FROM file_purchases
+            WHERE payment_id=$1
+            """,
+            payment_id
+        )
+
+        if not purchase:
+            return await call.answer(
+                "Data pembayaran tidak ditemukan",
+                show_alert=True
+            )
+
+        file = await fetchrow(
+            """
+            SELECT *
+            FROM files
+            WHERE code=$1
+            """,
+            purchase["file_code"]
+        )
+
+        if not file:
+            return await call.answer(
+                "File tidak ditemukan",
+                show_alert=True
+            )
+
+        await finish_payment(
+            call.bot,
+            purchase,
+            file,
+            payment_id,
+            call.message
+        )
+
+    except Exception:
+        logger.exception(
+            "DOMPETX CHECK ERROR"
+        )
+
+        await call.message.answer(
+            "❌ Terjadi kesalahan."
+        )
+
+    finally:
+        CHECK_LOCK.discard(payment_id)
+
+
+# ==================================================
+# CANCEL PAYMENT
+# ==================================================
+
+@router.callback_query(F.data.startswith("dompetxcancel:"))
+async def cancel_dompetx(call: CallbackQuery):
+
+    payment_id = call.data.split(":")[1]
+
+    payment = await fetchrow(
+        """
+        SELECT *
+        FROM file_purchases
+        WHERE payment_id=$1
+        """,
+        payment_id
+    )
+
+    if not payment:
+        return await call.answer(
+            "Data tidak ditemukan",
+            show_alert=True
+        )
+
+    if payment["status"] == "paid":
+        return await call.answer(
+            "Sudah dibayar",
+            show_alert=True
+        )
+
+    try:
+        await DompetX.cancel_payment(
+            payment_id
+        )
+    except Exception:
+        logger.exception(
+            "DOMPETX CANCEL ERROR"
+        )
+
+    await execute(
+        """
+        UPDATE file_purchases
+        SET status='cancel'
+        WHERE payment_id=$1
+        """,
+        payment_id
+    )
+
+    try:
+
+        if (
+            payment["qr_message_id"]
+            and payment["qr_chat_id"]
+        ):
+
+            await call.bot.delete_message(
+                payment["qr_chat_id"],
+                payment["qr_message_id"]
+            )
+
+    except Exception:
+        pass
+
+    await call.answer(
+        "Pembayaran dibatalkan"
+    )
+
+    await call.message.answer(
+        "❌ Pembayaran dibatalkan."
+    )
+
+
+
