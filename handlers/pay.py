@@ -20,6 +20,7 @@ from utils.redis_client import (
 )
 
 from utils.dompetx import DompetX
+from utils.bayargg import BayarGG
 
 from config import (
     STORAGE_CHANNEL_ID,
@@ -115,7 +116,7 @@ async def send_upgrade_notif(
 
 
 
-# ==================================================
+## ==================================================
 # KEYBOARD
 # ==================================================
 
@@ -125,19 +126,24 @@ def payment_method_keyboard(code):
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="⚡ Bayar Otomatis",
+                    text="⚡ Bayar Qr Otomatis1",
                     callback_data=f"auto:{code}"
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="📷 Bayar Manual",
+                    text="💳 Bayar Qr Otomatis2",
+                    callback_data=f"dompetx:{code}"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📷 Bayar Qr Manual",
                     callback_data=f"manual:{code}"
                 )
             ]
         ]
     )
-
 
 
 def manual_payment_keyboard(code):
@@ -160,21 +166,27 @@ def manual_payment_keyboard(code):
     )
 
 
+def payment_check_keyboard(invoice, gateway="bayargg"):
 
-def payment_check_keyboard(invoice):
+    check_cb = f"check:{invoice}"
+    cancel_cb = f"cancel:{invoice}"
+
+    if gateway == "dompetx":
+        check_cb = f"checkdx:{invoice}"
+        cancel_cb = f"canceldx:{invoice}"
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text="🔄 Cek Pembayaran",
-                    callback_data=f"check:{invoice}"
+                    callback_data=check_cb
                 )
             ],
             [
                 InlineKeyboardButton(
                     text="❌ Batalkan",
-                    callback_data=f"cancel:{invoice}"
+                    callback_data=cancel_cb
                 )
             ]
         ]
