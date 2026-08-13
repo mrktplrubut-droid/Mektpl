@@ -622,14 +622,11 @@ async def create_dompetx(call: CallbackQuery):
     # ==================================================
 
     caption = (
-        "💳 <b>DOMPETX QRIS</b>\n\n"
-
+        "💳 <b>OO File Bot</b>\n\n"
         f"📄 File:\n"
         f"<b>{file['title']}</b>\n\n"
-
         f"🧾 Invoice:\n"
         f"<code>{payment_id}</code>\n\n"
-
         f"💰 Total:\n"
         f"<b>{format_rupiah(price)}</b>\n\n"
 
