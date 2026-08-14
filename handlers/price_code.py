@@ -33,7 +33,7 @@ async def price_menu(call: CallbackQuery):
 
     kb.button(
         text="⬅️ Kembali",
-        callback_data="code"
+        callback_data="marketplace"
     )
 
     kb.adjust(1)
