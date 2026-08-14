@@ -7,6 +7,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton
 )
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from database import get_pool
 
@@ -14,45 +15,6 @@ from database import get_pool
 router = Router()
 
 LIMIT = 10
-
-
-def page_keyboard(page, max_page, prefix):
-    buttons = []
-
-    if page > 1:
-        buttons.append(
-            InlineKeyboardButton(
-                text="⬅️",
-                callback_data=f"{prefix}:{page-1}"
-            )
-        )
-
-    buttons.append(
-        InlineKeyboardButton(
-            text=f"{page}/{max_page}",
-            callback_data="ignore"
-        )
-    )
-
-    if page < max_page:
-        buttons.append(
-            InlineKeyboardButton(
-                text="➡️",
-                callback_data=f"{prefix}:{page+1}"
-            )
-        )
-
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            buttons,
-            [
-                InlineKeyboardButton(
-                    text="🏪 Kembali market",
-                    callback_data="marketplace"
-                )
-            ]
-        ]
-    )
 
 
 async def show_top_code(target, page=1):
@@ -68,20 +30,21 @@ async def show_top_code(target, page=1):
         """
     )
 
-    if total == 0:
+    if not total:
+
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="↪️ Kembali",
-                        callback_data="code"
+                        text="🏪 Marketplace",
+                        callback_data="marketplace"
                     )
                 ]
             ]
         )
 
         await msg.edit_text(
-            "❌ Belum ada code.",
+            "❌ Belum ada file.",
             reply_markup=kb
         )
 
@@ -90,26 +53,23 @@ async def show_top_code(target, page=1):
 
         return
 
-
     max_page = ceil(total / LIMIT)
-
-    page = max(
-        1,
-        min(page, max_page)
-    )
-
+    page = max(1, min(page, max_page))
     offset = (page - 1) * LIMIT
-
 
     rows = await pool.fetch(
         """
         SELECT
             code,
             title,
-            view_count
+            price,
+            media_count,
+            views,
+            rating,
+            is_premium
         FROM files
         ORDER BY
-            view_count DESC,
+            views DESC,
             created_at DESC
         LIMIT $1 OFFSET $2
         """,
@@ -117,59 +77,102 @@ async def show_top_code(target, page=1):
         offset
     )
 
-
     text = (
-        "🔥 <b>TOP 10 CODE TERPOPULER</b>\n"
+        "🔥 <b>TOP FILE TERPOPULER</b>\n"
         "━━━━━━━━━━━━━━━━━━\n\n"
     )
 
+    kb = InlineKeyboardBuilder()
 
-    for i, row in enumerate(
-        rows,
-        start=offset + 1
-    ):
+    for i, row in enumerate(rows, start=offset + 1):
 
-        icon = (
-            "🥇" if i == 1 else
-            "🥈" if i == 2 else
-            "🥉" if i == 3 else
-            f"{i}."
+        if i == 1:
+            icon = "🥇"
+        elif i == 2:
+            icon = "🥈"
+        elif i == 3:
+            icon = "🥉"
+        else:
+            icon = f"{i}."
+
+        harga = (
+            "Gratis"
+            if not row["price"]
+            else f"Rp {row['price']:,}".replace(",", ".")
+        )
+
+        premium = " 👑" if row["is_premium"] else ""
+
+        rating = (
+            f"{float(row['rating']):.1f}"
+            if row["rating"] is not None
+            else "0.0"
         )
 
         text += (
-            f"{icon} <b>{row['title']}</b>\n"
-            f"🔑 <code>{row['code']}</code>\n"
-            f"👁 Dibuka : {row['view_count']}x\n\n"
+            f"{icon} <b>{row['title']}</b>{premium}\n"
+            f"💰 {harga}\n"
+            f"📁 {row['media_count']} Media\n"
+            f"👁 {row['views']} Dilihat\n"
+            f"⭐ {rating}\n\n"
         )
 
+        kb.button(
+            text=f"📦 {row['title'][:30]}",
+            callback_data=f"market:{row['code']}"
+        )
+
+    nav = []
+
+    if page > 1:
+        nav.append(
+            InlineKeyboardButton(
+                text="⬅️",
+                callback_data=f"top:{page-1}"
+            )
+        )
+
+    nav.append(
+        InlineKeyboardButton(
+            text=f"{page}/{max_page}",
+            callback_data="ignore"
+        )
+    )
+
+    if page < max_page:
+        nav.append(
+            InlineKeyboardButton(
+                text="➡️",
+                callback_data=f"top:{page+1}"
+            )
+        )
+
+    kb.row(*nav)
+
+    kb.button(
+        text="🏪 Marketplace",
+        callback_data="marketplace"
+    )
+
+    kb.adjust(1)
 
     await msg.edit_text(
         text,
         parse_mode="HTML",
-        reply_markup=page_keyboard(
-            page,
-            max_page,
-            "top"
-        )
+        reply_markup=kb.as_markup()
     )
 
     if isinstance(target, CallbackQuery):
         await target.answer()
 
 
-
 # =========================
-# BUTTON TOP 10
+# BUTTON TOP
 # =========================
 
 @router.callback_query(F.data == "top_code")
 async def top_open(call: CallbackQuery):
-
-    await show_top_code(
-        call,
-        1
-    )
-
+    await show_top_code(call, 1)
 
 
 # =========================
@@ -179,22 +182,14 @@ async def top_open(call: CallbackQuery):
 @router.callback_query(F.data.startswith("top:"))
 async def top_page(call: CallbackQuery):
 
-    page = int(
-        call.data.split(":")[1]
-    )
+    page = int(call.data.split(":")[1])
 
-    await show_top_code(
-        call,
-        page
-    )
-
+    await show_top_code(call, page)
 
 
 @router.callback_query(F.data == "ignore")
 async def ignore(call: CallbackQuery):
-
     await call.answer()
-
 
 
 # =========================
@@ -202,8 +197,4 @@ async def ignore(call: CallbackQuery):
 # =========================
 
 async def top_command(message: Message):
-
-    await show_top_code(
-        message,
-        1
-    )
+    await show_top_code(message, 1)
