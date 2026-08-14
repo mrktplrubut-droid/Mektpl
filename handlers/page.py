@@ -84,6 +84,17 @@ async def send_page(bot, chat_id, user_id, code, page=1):
         print("FILE NOT FOUND")
         return False
 
+    # Tambah jumlah view hanya saat membuka halaman pertama
+    if page == 1:
+        await pool.execute(
+            """
+            UPDATE files
+            SET views = COALESCE(views, 0) + 1
+            WHERE code = $1
+            """,
+            code
+        )
+
 
     media = file["media"]
 
