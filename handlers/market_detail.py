@@ -29,14 +29,14 @@ async def market_detail(call: CallbackQuery):
             owner_id,
             is_paid,
 
-            COALESCE(sold,0) AS sold,
-            COALESCE(views,0) AS views,
-            COALESCE(rating,0) AS rating,
-            COALESCE(review_count,0) AS review_count,
-            COALESCE(favorite_count,0) AS favorite_count
+            COALESCE(sold, 0) AS sold,
+            COALESCE(views, 0) AS views,
+            COALESCE(rating, 0) AS rating,
+            COALESCE(review_count, 0) AS review_count,
+            COALESCE(favorite_count, 0) AS favorite_count
 
         FROM files
-        WHERE code=$1
+        WHERE code = $1
         LIMIT 1
         """,
         code
@@ -52,11 +52,13 @@ async def market_detail(call: CallbackQuery):
     await execute(
         """
         UPDATE files
-        SET views = COALESCE(views,0)+1
-        WHERE code=$1
+        SET views = COALESCE(views, 0) + 1
+        WHERE code = $1
         """,
         code
     )
+
+    price = file["price"] or 0
 
     text = (
         "📦 <b>DETAIL FILE</b>\n"
@@ -66,7 +68,7 @@ async def market_detail(call: CallbackQuery):
 
         f"📂 <b>Kategori :</b> {file['category'] or 'Lainnya'}\n"
         f"📁 <b>Total Media :</b> {file['media_count']}\n"
-        f"💰 <b>Harga :</b> Rp {file['price']:,}\n"
+        f"💰 <b>Harga :</b> Rp {price:,}\n"
         f"👤 <b>Seller :</b> <code>{file['owner_id']}</code>\n\n"
 
         f"🔥 <b>Terjual :</b> {file['sold']}\n"
@@ -75,7 +77,7 @@ async def market_detail(call: CallbackQuery):
         f"⭐ <b>Rating :</b> {float(file['rating']):.1f} ({file['review_count']} Review)\n\n"
 
         "📝 <b>Deskripsi</b>\n"
-        f"{file['description'] or 'Tidak ada deskripsi.'}"
+        f"{file['description'] or 'Belum ada deskripsi.'}"
     ).replace(",", ".")
 
     keyboard = []
@@ -83,7 +85,7 @@ async def market_detail(call: CallbackQuery):
     if file["is_paid"]:
         keyboard.append([
             InlineKeyboardButton(
-                text=f"💳 Beli Rp {file['price']:,}".replace(",", "."),
+                text=f"💳 Beli Rp {price:,}".replace(",", "."),
                 callback_data=f"pay:{code}"
             )
         ])
@@ -95,35 +97,36 @@ async def market_detail(call: CallbackQuery):
             )
         ])
 
-    keyboard.extend([
-        [
-            InlineKeyboardButton(
-                text="❤️ Tambah Favorit",
-                callback_data=f"favorite:{code}"
-            ),
-            InlineKeyboardButton(
-                text="⭐ Rating",
-                callback_data=f"rating:{code}"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="💬 Review",
-                callback_data=f"review:{code}"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="📤 Bagikan",
-                callback_data=f"share:{code}"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="⬅️ Marketplace",
-                callback_data="marketplace"
-            )
-        ]
+    keyboard.append([
+        InlineKeyboardButton(
+            text="❤️ Favorit",
+            callback_data=f"favorite:{code}"
+        ),
+        InlineKeyboardButton(
+            text="⭐ Rating",
+            callback_data=f"rating:{code}"
+        )
+    ])
+
+    keyboard.append([
+        InlineKeyboardButton(
+            text="💬 Review",
+            callback_data=f"review:{code}"
+        )
+    ])
+
+    keyboard.append([
+        InlineKeyboardButton(
+            text="📤 Bagikan",
+            callback_data=f"share:{code}"
+        )
+    ])
+
+    keyboard.append([
+        InlineKeyboardButton(
+            text="⬅️ Marketplace",
+            callback_data="marketplace"
+        )
     ])
 
     await call.message.edit_text(
