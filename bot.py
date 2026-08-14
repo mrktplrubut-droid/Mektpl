@@ -53,6 +53,7 @@ from handlers.upfile import router as upfile_router
 from handlers.getfile import router as getfile_router
 from handlers.page import router as page_router
 from handlers.open_menu import router as open_menu_router
+from handlers.menu import router as menu_router
 
 from handlers.top import router as top_router
 from handlers.code import router as code_router
@@ -92,6 +93,7 @@ from handlers.marketplace import router as marketplace_router
 # BASIC
 dp.include_router(start_router)
 dp.include_router(check_sub_router)
+dp.include_router(menu_router)
 
 # FILE SYSTEM
 dp.include_router(upfile_router)
