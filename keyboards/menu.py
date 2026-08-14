@@ -23,7 +23,7 @@ def home_kb(user_id: int):
                     callback_data="account"
                 ),
                 InlineKeyboardButton(
-                    text="📊 Marketplace",
+                    text="🛍️ Marketplace",
                     callback_data="marketplace"
                 )
             ],
