@@ -1,5 +1,9 @@
 from aiogram import Router, F
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton
+)
 
 from database import fetchrow, execute
 
@@ -23,13 +27,16 @@ async def market_detail(call: CallbackQuery):
             price,
             media_count,
             owner_id,
-            sold,
-            views,
-            rating,
-            review_count,
-            is_paid
+            is_paid,
+
+            COALESCE(sold,0) AS sold,
+            COALESCE(views,0) AS views,
+            COALESCE(rating,0) AS rating,
+            COALESCE(review_count,0) AS review_count,
+            COALESCE(favorite_count,0) AS favorite_count
+
         FROM files
-        WHERE code = $1
+        WHERE code=$1
         LIMIT 1
         """,
         code
@@ -41,12 +48,12 @@ async def market_detail(call: CallbackQuery):
             show_alert=True
         )
 
-    # Tambah jumlah view
+    # Tambah view
     await execute(
         """
         UPDATE files
-        SET views = views + 1
-        WHERE code = $1
+        SET views = COALESCE(views,0)+1
+        WHERE code=$1
         """,
         code
     )
@@ -63,48 +70,66 @@ async def market_detail(call: CallbackQuery):
         f"👤 <b>Seller :</b> <code>{file['owner_id']}</code>\n\n"
 
         f"🔥 <b>Terjual :</b> {file['sold']}\n"
-        f"👀 <b>Dilihat :</b> {file['views'] + 1}\n"
+        f"👁 <b>Dilihat :</b> {file['views'] + 1}\n"
+        f"❤️ <b>Favorit :</b> {file['favorite_count']}\n"
         f"⭐ <b>Rating :</b> {float(file['rating']):.1f} ({file['review_count']} Review)\n\n"
 
         "📝 <b>Deskripsi</b>\n"
         f"{file['description'] or 'Tidak ada deskripsi.'}"
-    )
+    ).replace(",", ".")
 
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="💳 Beli Sekarang",
-                    callback_data=f"pay:{code}"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="❤️ Favorit",
-                    callback_data=f"fav:{code}"
-                ),
-                InlineKeyboardButton(
-                    text="⭐ Review",
-                    callback_data=f"review:{code}"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="📤 Bagikan",
-                    callback_data=f"share:{code}"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="⬅️ Marketplace",
-                    callback_data="marketplace"
-                )
-            ]
+    keyboard = []
+
+    if file["is_paid"]:
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"💳 Beli Rp {file['price']:,}".replace(",", "."),
+                callback_data=f"pay:{code}"
+            )
+        ])
+    else:
+        keyboard.append([
+            InlineKeyboardButton(
+                text="📂 Buka File",
+                callback_data=f"page:{code}:1"
+            )
+        ])
+
+    keyboard.extend([
+        [
+            InlineKeyboardButton(
+                text="❤️ Tambah Favorit",
+                callback_data=f"favorite:{code}"
+            ),
+            InlineKeyboardButton(
+                text="⭐ Rating",
+                callback_data=f"rating:{code}"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="💬 Review",
+                callback_data=f"review:{code}"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="📤 Bagikan",
+                callback_data=f"share:{code}"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="⬅️ Marketplace",
+                callback_data="marketplace"
+            )
         ]
-    )
+    ])
 
     await call.message.edit_text(
-        text.replace(",", "."),
+        text,
         parse_mode="HTML",
-        reply_markup=keyboard
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=keyboard
+        )
     )
