@@ -27,11 +27,15 @@ async def home_kb(user_id: int):
                     callback_data="account"
                 ),
                 InlineKeyboardButton(
-                    text="📂 Menu Lainnya",
-                    callback_data="menu_lainnya"
+                    text="📊 Marketplace",
+                    callback_data="marketplace"
                 )
             ],
             [
+                InlineKeyboardButton(
+                    text="📂 Menu Lainnya",
+                    callback_data="menu_lainnya"
+                ),
                 InlineKeyboardButton(
                     text="❓ Bantuan",
                     callback_data="help"
