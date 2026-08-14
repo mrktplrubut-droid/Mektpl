@@ -47,8 +47,8 @@ def page_keyboard(page, max_page, prefix):
             buttons,
             [
                 InlineKeyboardButton(
-                    text="🏪 Kembali Store",
-                    callback_data="store"
+                    text="🏪 Kembali market",
+                    callback_data="marketplace"
                 )
             ]
         ]
