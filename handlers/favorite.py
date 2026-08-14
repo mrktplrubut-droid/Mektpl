@@ -9,10 +9,12 @@ router = Router()
 @router.callback_query(F.data.startswith("favorite:"))
 async def favorite_toggle(call: CallbackQuery):
 
-    await call.answer()
-
     code = call.data.split(":", 1)[1]
     user_id = call.from_user.id
+
+    # =========================
+    # CEK FILE
+    # =========================
 
     file = await fetchrow(
         """
@@ -30,12 +32,17 @@ async def favorite_toggle(call: CallbackQuery):
             show_alert=True
         )
 
+    # =========================
+    # CEK FAVORIT
+    # =========================
+
     exists = await fetchrow(
         """
         SELECT 1
         FROM file_favorites
         WHERE user_id=$1
           AND file_code=$2
+        LIMIT 1
         """,
         user_id,
         code
@@ -44,6 +51,7 @@ async def favorite_toggle(call: CallbackQuery):
     # =========================
     # HAPUS FAVORIT
     # =========================
+
     if exists:
 
         await execute(
@@ -60,7 +68,7 @@ async def favorite_toggle(call: CallbackQuery):
             """
             UPDATE files
             SET favorite_count = GREATEST(
-                COALESCE(favorite_count,0)-1,
+                COALESCE(favorite_count, 0) - 1,
                 0
             )
             WHERE code=$1
@@ -68,10 +76,12 @@ async def favorite_toggle(call: CallbackQuery):
             code
         )
 
-        return await call.answer(
+        await call.answer(
             "💔 Favorit dihapus.",
             show_alert=True
         )
+
+        return
 
     # =========================
     # TAMBAH FAVORIT
@@ -79,11 +89,13 @@ async def favorite_toggle(call: CallbackQuery):
 
     await execute(
         """
-        INSERT INTO file_favorites(
+        INSERT INTO file_favorites (
             user_id,
             file_code
         )
-        VALUES($1,$2)
+        VALUES ($1, $2)
+        ON CONFLICT (user_id, file_code)
+        DO NOTHING
         """,
         user_id,
         code
@@ -93,7 +105,7 @@ async def favorite_toggle(call: CallbackQuery):
         """
         UPDATE files
         SET favorite_count =
-            COALESCE(favorite_count,0)+1
+            COALESCE(favorite_count, 0) + 1
         WHERE code=$1
         """,
         code
