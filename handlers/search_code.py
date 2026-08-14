@@ -105,7 +105,7 @@ async def search_result(message: Message, state: FSMContext):
     kb = InlineKeyboardBuilder()
 
     kb.button(
-        text="📦 Menu Code",
+        text="↪️ kembali",
         callback_data="code"
     )
 
