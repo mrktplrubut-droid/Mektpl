@@ -75,6 +75,8 @@ from handlers.delete_file import router as delete_file_router
 from handlers.edit_price import router as edit_price_router
 from handlers.ewallet import router as ewallet_router
 
+from handlers.favorite import router as favorite_router
+
 from handlers.pay import router as pay_router
 from handlers.cancel import router as cancel_router
 from handlers.dompetx import router as dompetx_router
@@ -135,6 +137,8 @@ dp.include_router(withdraw_confirm_router)
 
 # ADMIN
 dp.include_router(admin_router)
+
+dp.include_router(favorite_router)
 
 # MARKETPLACE
 dp.include_router(marketplace_router)
