@@ -49,7 +49,7 @@ async def clear_cache_loop():
 
             for key, value in list(cache.items()):
 
-                if now - value[1] > 7200:
+                if now - value[0] > 7200:
                     remove.append(key)
 
             for key in remove:
@@ -84,16 +84,28 @@ async def send_page(bot, chat_id, user_id, code, page=1):
         print("FILE NOT FOUND")
         return False
 
-    # Tambah jumlah view hanya saat membuka halaman pertama
+    # =========================
+    # HITUNG VIEW (1x per user per 1 jam)
+    # =========================
+    cache_key = (user_id, code)
+
     if page == 1:
-        await pool.execute(
-            """
-            UPDATE files
-            SET views = COALESCE(views, 0) + 1
-            WHERE code = $1
-            """,
-            code
-        )
+        now = time.time()
+
+        last = PAGE_CACHE.get(cache_key)
+
+        if last is None or now - last[0] >= SAME_PAGE_COOLDOWN:
+
+            PAGE_CACHE[cache_key] = (now, page)
+
+            await pool.execute(
+                """
+                UPDATE files
+                SET views = COALESCE(views, 0) + 1
+                WHERE code = $1
+                """,
+                code
+            )
 
 
     media = file["media"]
