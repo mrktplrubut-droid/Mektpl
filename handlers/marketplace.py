@@ -71,7 +71,8 @@ async def marketplace_menu(call: CallbackQuery):
     kb.button(text="🆕 Terbaru", callback_data="new_code")
     kb.button(text="📂 Kategori", callback_data="category_code")
     kb.button(text="🏷 Semua File", callback_data="market_all")
-    kb.button(text="⭐ Favorit", callback_data="market_favorite")
+    kb.button(text="⭐ Rating", callback_data="market_rating")
+    kb.button(text="❤️ Favorit", callback_data="market_favorite")
     kb.button(text="🛍 Pembelian Saya", callback_data="market_purchase")
     kb.button(text="🏠 Home", callback_data="home")
 
