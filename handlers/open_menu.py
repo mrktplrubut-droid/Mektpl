@@ -33,9 +33,9 @@ def open_keyboard(code):
 
 @router.callback_query(F.data.startswith("all:"))
 async def open_all(call: CallbackQuery):
-    code = call.data.split(":")[1]
+    code = call.data.split(":", 1)[1]
 
-    # ✅ jawab dulu biar ga expired
+    # Jawab callback agar tidak timeout
     try:
         await call.answer("⏳ Processing...")
     except:
@@ -47,7 +47,7 @@ async def open_all(call: CallbackQuery):
         """
         SELECT *
         FROM files
-        WHERE LOWER(code)=LOWER($1)
+        WHERE LOWER(TRIM(code)) = LOWER(TRIM($1))
         LIMIT 1
         """,
         code
@@ -55,22 +55,35 @@ async def open_all(call: CallbackQuery):
 
     if not file:
         try:
-            await call.answer("❌ File tidak ditemukan", show_alert=True)
+            await call.answer(
+                "❌ File tidak ditemukan.",
+                show_alert=True
+            )
         except:
             pass
         return
 
-    # 🔥 AMBIL USER LEVEL
+    # ✅ Tambah jumlah view
+    await pool.execute(
+        """
+        UPDATE files
+        SET views = COALESCE(views, 0) + 1
+        WHERE code = $1
+        """,
+        code
+    )
+
+    # Ambil status user
     user_level = await get_user_status(
         pool,
         call.from_user.id
     )
 
-    # 🔥 KIRIM KE send_all
+    # Kirim semua media
     await send_all(
         bot=call.bot,
         chat_id=call.message.chat.id,
         code=code,
         file=file,
-        user_level=user_level  # 🔥 WAJIB
+        user_level=user_level
     )
