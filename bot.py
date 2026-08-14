@@ -77,6 +77,7 @@ from handlers.ewallet import router as ewallet_router
 
 from handlers.favorite import router as favorite_router
 from handlers.rating import router as rating_router
+from handlers.market_all import router as market_all_router
 from handlers.market_purchase import router as market_purchase_router
 
 from handlers.pay import router as pay_router
@@ -141,6 +142,7 @@ dp.include_router(admin_router)
 
 dp.include_router(favorite_router)
 dp.include_router(rating_router)
+dp.include_router(market_all_router)
 dp.include_router(market_purchase_router)
 
 # MARKETPLACE
