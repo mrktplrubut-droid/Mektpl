@@ -28,7 +28,10 @@ async def marketplace_menu(call: CallbackQuery):
             price,
             media_count,
             sold,
-            rating
+            views,
+            favorite_count,
+            rating,
+            review_count
         FROM files
         WHERE is_paid = true
         ORDER BY created_at DESC
@@ -54,11 +57,18 @@ async def marketplace_menu(call: CallbackQuery):
 
         for f in files:
 
+            rating = float(f["rating"] or 0)
+            views = f["views"] or 0
+            favorites = f["favorite_count"] or 0
+            sold = f["sold"] or 0
+            review_count = f["review_count"] or 0
+
             text += (
                 f"📦 <b>{f['title']}</b>\n"
                 f"💰 Rp{f['price']:,}\n"
                 f"📁 {f['media_count']} Media\n"
-                f"🔥 {f['sold']} Terjual | ⭐ {float(f['rating']):.1f}\n\n"
+                f"👁 {views:,} Dilihat | ❤️ {favorites:,} Favorit\n"
+                f"🔥 {sold:,} Terjual | ⭐ {rating:.1f} ({review_count} ulasan)\n\n"
             )
 
             kb.button(
