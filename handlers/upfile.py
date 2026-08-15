@@ -1495,101 +1495,107 @@ async def send_paid_review(
     media_count: int,
     review_photos: list,
 ):
-
     if not review_photos:
         return
 
     # -----------------------------------------------------
-    # BOT NAME
+    # BOT INFO
     # -----------------------------------------------------
 
     me = await bot.get_me()
 
-    bot_username = (
-        me.username
-        or "Unknown"
-    )
+    bot_username = me.username or "Unknown"
 
     # -----------------------------------------------------
     # CREATOR
     # -----------------------------------------------------
 
     if username:
-
-        creator_text = (
-            f"@{username}"
-        )
-
+        creator_text = f"@{username}"
     else:
-
-        creator_text = (
-            f"<code>{mask_user_id(user_id)}</code>"
-        )
+        creator_text = f"<code>{mask_user_id(user_id)}</code>"
 
     # -----------------------------------------------------
     # CAPTION
     # -----------------------------------------------------
 
     caption = (
-
-        "💰 <b>PAID FILE</b>\n\n"
-
+        "💰 <b>PAID FILE</b>\n"
         f"🤖 Bot : @{bot_username}\n"
-
         f"👤 Creator : {creator_text}\n"
-
         f"📝 Judul : {title}\n"
-
-        f"📦 Total Media : "
-        f"{media_count}\n"
-
-        f"💵 Harga : "
-        f"<b>{rupiah(price)}</b>\n"
-
-        f"🔑 CODE : "
-        f"<code>{code}</code>\n\n"
-
-        "🛒 <b>File tersedia untuk dibeli.</b>"
+        f"📦 Total Media : {media_count}\n"
+        f"💵 Harga : <b>{rupiah(price)}</b>\n"
+        f"🔑 CODE : <code>{code}</code>\n"
+        "🛒 File tersedia untuk dibeli."
     )
 
     # -----------------------------------------------------
-    # SEND PHOTOS
+    # BUILD ALBUM
     # -----------------------------------------------------
 
-    for index, photo_id in enumerate(
-        review_photos
-    ):
+    from aiogram.types import InputMediaPhoto
+
+    media_group = []
+
+    for index, photo_id in enumerate(review_photos):
 
         if index == 0:
-
-            await bot.send_photo(
-
-                chat_id=REVIEW_CHANNEL_ID,
-
-                photo=photo_id,
-
-                caption=caption,
-
-                parse_mode="HTML",
+            media_group.append(
+                InputMediaPhoto(
+                    media=photo_id,
+                    caption=caption,
+                    parse_mode="HTML",
+                )
             )
-
         else:
-
-            await bot.send_photo(
-
-                chat_id=REVIEW_CHANNEL_ID,
-
-                photo=photo_id,
+            media_group.append(
+                InputMediaPhoto(
+                    media=photo_id,
+                )
             )
 
-        await asyncio.sleep(0.3)
+    # -----------------------------------------------------
+    # SEND ALBUM
+    # -----------------------------------------------------
 
-    logger.info(
-        "PAID REVIEW SENT | "
-        "code=%s | photos=%s",
-        code,
-        len(review_photos),
-    )
+    try:
+
+        await bot.send_media_group(
+            chat_id=REVIEW_CHANNEL_ID,
+            media=media_group,
+        )
+
+        logger.info(
+            "PAID REVIEW SENT | code=%s | photos=%s",
+            code,
+            len(review_photos),
+        )
+
+    except TelegramRetryAfter as e:
+
+        logger.warning(
+            "TelegramRetryAfter REVIEW | retry=%s",
+            e.retry_after,
+        )
+
+        await asyncio.sleep(
+            e.retry_after + 1
+        )
+
+        await bot.send_media_group(
+            chat_id=REVIEW_CHANNEL_ID,
+            media=media_group,
+        )
+
+    except Exception:
+
+        logger.exception(
+            "PAID REVIEW ERROR | code=%s",
+            code,
+        )
+
+        raise
 
 
 # =========================================================
