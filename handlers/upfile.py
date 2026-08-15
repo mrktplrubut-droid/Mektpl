@@ -1242,6 +1242,8 @@ async def input_price(
             "✅ <b>SELESAI REVIEW</b>",
 
             parse_mode="HTML",
+
+            reply_markup=review_keyboard(),
         )
 
 
