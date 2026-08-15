@@ -6,8 +6,8 @@ import time
 
 from typing import Dict
 from contextlib import asynccontextmanager
-from aiogram.filters import StateFilter
 
+from aiogram.filters import StateFilter
 from aiogram import Router, F
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
@@ -26,7 +26,6 @@ from utils.user import get_user_status
 
 router = Router()
 
-
 logging.basicConfig(level=logging.INFO)
 
 
@@ -37,7 +36,7 @@ _last_update: Dict[int, float] = {}
 _user_locks: Dict[int, asyncio.Lock] = {}
 
 
-def get_lock(user_id:int):
+def get_lock(user_id: int):
 
     if user_id not in _user_locks:
         _user_locks[user_id] = asyncio.Lock()
@@ -46,11 +45,10 @@ def get_lock(user_id:int):
 
 
 @asynccontextmanager
-async def user_lock(user_id:int):
+async def user_lock(user_id: int):
 
     async with get_lock(user_id):
         yield
-
 
 
 class GetFileState(StatesGroup):
@@ -58,39 +56,35 @@ class GetFileState(StatesGroup):
     waiting_code = State()
 
 
-
 def safe_json(data):
 
-    if isinstance(data,str):
+    if isinstance(data, str):
 
         try:
             return json.loads(data)
 
-        except:
+        except Exception:
             return []
 
     return data or []
 
 
-
 async def safe_update(
     bot,
-    chat_id:int,
-    message_id:int,
-    text:str,
+    chat_id: int,
+    message_id: int,
+    text: str,
     reply_markup=None
 ):
 
-    now=time.time()
+    now = time.time()
 
     if chat_id in _last_update:
 
         if now - _last_update[chat_id] < UPDATE_DELAY:
             return
 
-
-    _last_update[chat_id]=now
-
+    _last_update[chat_id] = now
 
     try:
 
@@ -102,14 +96,11 @@ async def safe_update(
             reply_markup=reply_markup
         )
 
-
     except TelegramBadRequest:
         pass
 
-
     except Exception:
         logging.exception("GETFILE UPDATE ERROR")
-
 
 
 # =====================================
@@ -121,6 +112,7 @@ async def getfile_start(
     call: CallbackQuery,
     state: FSMContext
 ):
+
     await call.answer()
 
     async with user_lock(call.from_user.id):
@@ -145,25 +137,30 @@ async def getfile_start(
         )
 
         try:
+
             await call.message.edit_text(
                 text=text,
                 parse_mode="HTML",
                 reply_markup=keyboard
             )
+
             progress_id = call.message.message_id
 
         except TelegramBadRequest:
+
             msg = await call.message.answer(
                 text=text,
                 parse_mode="HTML",
                 reply_markup=keyboard
             )
+
             progress_id = msg.message_id
 
         await state.update_data(
             getfile_mode=True,
             progress_msg_id=progress_id
         )
+
 
 # =====================================
 # OPEN FILE
@@ -174,6 +171,7 @@ async def open_file_by_code(
     code: str,
     state: FSMContext
 ):
+
     pool = await get_pool()
 
     file = await pool.fetchrow(
@@ -185,7 +183,8 @@ async def open_file_by_code(
             owner_id,
             expires_at,
             is_paid,
-            price
+            price,
+            views
         FROM files
         WHERE LOWER(TRIM(code)) = LOWER(TRIM($1))
         LIMIT 1
@@ -193,54 +192,92 @@ async def open_file_by_code(
         code
     )
 
+    # =====================================
+    # FILE TIDAK DITEMUKAN
+    # =====================================
+
     if not file:
+
         await state.clear()
+
         return await message.answer(
             "❌ File tidak ditemukan."
         )
 
+    # =====================================
+    # CEK MEDIA
+    # =====================================
+
     media = safe_json(file["media"])
 
     if not media:
+
         await state.clear()
+
         return await message.answer(
             "❌ File kosong."
         )
+
+    # =====================================
+    # CEK EXPIRED
+    # =====================================
 
     if (
         file["expires_at"]
         and file["expires_at"].timestamp() < time.time()
     ):
+
         await state.clear()
+
         return await message.answer(
             "❌ File sudah kadaluarsa."
         )
+
+    # =====================================
+    # CEK OWNER
+    # =====================================
 
     owner = (
         message.from_user.id == file["owner_id"]
     )
 
+    # =====================================
+    # STATUS PEMBAYARAN
+    # =====================================
+
     is_paid = bool(file["is_paid"])
     price = file["price"] or 0
+
+    # =====================================
+    # USER LEVEL
+    # =====================================
 
     user_level = await get_user_status(
         pool,
         message.from_user.id
     )
 
+    # =====================================
+    # CEK PURCHASE
+    # =====================================
+
     access = await pool.fetchval(
         """
         SELECT EXISTS(
             SELECT 1
             FROM file_purchases
-            WHERE user_id=$1
-              AND file_code=$2
-              AND status='paid'
+            WHERE user_id = $1
+              AND file_code = $2
+              AND status = 'paid'
         )
         """,
         message.from_user.id,
         code
     )
+
+    # =====================================
+    # CEK AKSES
+    # =====================================
 
     has_access = (
         owner
@@ -248,7 +285,35 @@ async def open_file_by_code(
         or user_level in ("vip", "vvip")
     )
 
+    # =====================================
+    # 👁 TAMBAH VIEW
+    #
+    # View hanya dihitung kalau user
+    # benar-benar punya akses ke file.
+    #
+    # File gratis     -> dihitung
+    # Owner            -> dihitung
+    # Sudah membeli    -> dihitung
+    # VIP/VVIP         -> dihitung
+    # Belum membeli   -> TIDAK dihitung
+    # =====================================
+
+    if not is_paid or has_access:
+
+        await pool.execute(
+            """
+            UPDATE files
+            SET views = COALESCE(views, 0) + 1
+            WHERE code = $1
+            """,
+            file["code"]
+        )
+
     await state.clear()
+
+    # =====================================
+    # FILE BERBAYAR TAPI BELUM PUNYA AKSES
+    # =====================================
 
     if is_paid and not has_access:
 
@@ -280,6 +345,10 @@ async def open_file_by_code(
             reply_markup=keyboard
         )
 
+    # =====================================
+    # FILE BERHASIL DIBUKA
+    # =====================================
+
     from handlers.open_menu import open_keyboard
 
     return await message.answer(
@@ -294,7 +363,6 @@ async def open_file_by_code(
     )
 
 
-
 # =====================================
 # RECEIVE CODE
 # =====================================
@@ -306,6 +374,7 @@ CODE_REGEX = re.compile(
 
 
 def normalize_code(code: str):
+
     return (
         code.strip()
         .replace(" ", "")
@@ -313,13 +382,16 @@ def normalize_code(code: str):
         .lower()
     )
 
+
 async def process_code(
     message: Message,
     code: str
 ):
+
     code = normalize_code(code)
 
     class DummyState:
+
         async def clear(self):
             pass
 
@@ -349,10 +421,10 @@ async def receive_code(
 
             try:
                 await message.delete()
+
             except Exception:
                 pass
 
-            # JANGAN clear state
             return await message.answer(
                 "❌ Itu bukan CODE bot saya.\n\n"
                 "Silakan kirim CODE yang benar atau tekan Cancel."
@@ -362,6 +434,7 @@ async def receive_code(
 
         try:
             await message.delete()
+
         except Exception:
             pass
 
@@ -370,11 +443,14 @@ async def receive_code(
         progress_id = data.get("progress_msg_id")
 
         if progress_id:
+
             try:
+
                 await message.bot.delete_message(
                     chat_id=message.chat.id,
                     message_id=progress_id
                 )
+
             except Exception:
                 pass
 
@@ -384,11 +460,12 @@ async def receive_code(
             state=state
         )
 
+
 # =====================================
 # CANCEL GET FILE
 # =====================================
 
-@router.callback_query(F.data=="cancel_getfile")
+@router.callback_query(F.data == "cancel_getfile")
 async def cancel_getfile(
     call: CallbackQuery,
     state: FSMContext
@@ -396,11 +473,9 @@ async def cancel_getfile(
 
     await call.answer()
 
-
     async with user_lock(call.from_user.id):
 
         await state.clear()
-
 
         try:
 
@@ -419,7 +494,7 @@ async def cancel_getfile(
                 )
             )
 
-        except:
+        except Exception:
 
             await call.message.answer(
                 "❌ <b>Get File dibatalkan.</b>",
