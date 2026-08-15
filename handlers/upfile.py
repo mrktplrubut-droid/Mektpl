@@ -498,6 +498,7 @@ async def start_upload(
 # =========================================================
 
 @router.message(
+    UploadState.upload,
     F.document
     | F.video
     | F.photo
@@ -1266,12 +1267,11 @@ async def receive_review_photo(
 
         data = await state.get_data()
 
-        reviews = list(
-            data.get(
-                "review_photos",
-                []
-            )
-        )
+        # Ambil review yang sudah tersimpan
+        reviews = data.get("review_photos") or []
+
+        # Pastikan list
+        reviews = list(reviews)
 
         # -------------------------------------------------
         # MAX REVIEW
@@ -1285,17 +1285,15 @@ async def receive_review_photo(
                 pass
 
             return await message.answer(
-                f"❌ Maksimal "
-                f"{MAX_REVIEW_PHOTOS} foto review."
+                f"❌ Maksimal {MAX_REVIEW_PHOTOS} foto review."
             )
 
         # -------------------------------------------------
-        # GET PHOTO FILE ID
+        # GET FILE ID
         # -------------------------------------------------
 
-        file_id = (
-            message.photo[-1].file_id
-        )
+        photo = message.photo[-1]
+        file_id = photo.file_id
 
         # -------------------------------------------------
         # DUPLICATE
@@ -1309,22 +1307,33 @@ async def receive_review_photo(
                 pass
 
             return await message.answer(
-                "⚠️ Foto review tersebut "
-                "sudah ditambahkan."
+                "⚠️ Foto review tersebut sudah ditambahkan."
             )
 
         # -------------------------------------------------
-        # SAVE
+        # APPEND
         # -------------------------------------------------
 
         reviews.append(file_id)
+
+        # -------------------------------------------------
+        # SIMPAN STATE
+        # -------------------------------------------------
 
         await state.update_data(
             review_photos=reviews
         )
 
+        # DEBUG
+        logger.info(
+            "REVIEW PHOTO SAVED | user=%s | total=%s | photos=%s",
+            user_id,
+            len(reviews),
+            reviews,
+        )
+
         # -------------------------------------------------
-        # KEYBOARD
+        # CONFIRM
         # -------------------------------------------------
 
         await message.answer(
@@ -1368,18 +1377,51 @@ async def finish_review(
 
     async with user_lock(user_id):
 
+        # -------------------------------------------------
+        # GET CURRENT STATE
+        # -------------------------------------------------
+
+        current_state = await state.get_state()
+
+        logger.info(
+            "FINISH REVIEW | user=%s | state=%s",
+            user_id,
+            current_state,
+        )
+
+        # -------------------------------------------------
+        # CHECK STATE
+        # -------------------------------------------------
+
+        if current_state != UploadState.wait_review.state:
+
+            return await call.answer(
+                "❌ Sesi review sudah berakhir.",
+                show_alert=True,
+            )
+
+        # -------------------------------------------------
+        # GET DATA
+        # -------------------------------------------------
+
         data = await state.get_data()
 
-        reviews = data.get(
-            "review_photos",
-            []
+        reviews = data.get("review_photos") or []
+
+        reviews = list(reviews)
+
+        logger.info(
+            "FINISH REVIEW DATA | user=%s | reviews=%s | total=%s",
+            user_id,
+            reviews,
+            len(reviews),
         )
 
         # -------------------------------------------------
         # VALIDATE
         # -------------------------------------------------
 
-        if not reviews:
+        if len(reviews) < 1:
 
             return await call.answer(
                 "❌ Minimal 1 foto review.",
@@ -1389,15 +1431,19 @@ async def finish_review(
         if len(reviews) > MAX_REVIEW_PHOTOS:
 
             return await call.answer(
-                "❌ Maksimal 5 foto review.",
+                f"❌ Maksimal {MAX_REVIEW_PHOTOS} foto review.",
                 show_alert=True,
             )
 
         # -------------------------------------------------
-        # SAVING MESSAGE
+        # ANSWER CALLBACK
         # -------------------------------------------------
 
         await call.answer()
+
+        # -------------------------------------------------
+        # SAVING MESSAGE
+        # -------------------------------------------------
 
         try:
 
@@ -1420,9 +1466,16 @@ async def finish_review(
             saving_msg_id=call.message.message_id
         )
 
+        # -------------------------------------------------
+        # FINAL SAVE
+        # -------------------------------------------------
+
         await finalize_save(
+
             message=call.message,
+
             state=state,
+
             user_id=user_id,
         )
 
