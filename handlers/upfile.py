@@ -146,6 +146,28 @@ async def start_upload(call: CallbackQuery, state: FSMContext):
             reply_markup=join_kb()
         )
 
+    # =====================================
+    # CEK STATUS KREATOR
+    # =====================================
+
+    pool = await get_pool()
+
+    creator = await pool.fetchrow(
+        """
+        SELECT
+            is_creator,
+            creator_status
+        FROM users
+        WHERE user_id = $1
+        """,
+        call.from_user.id
+    )
+
+    is_creator = (
+        bool(creator["is_creator"])
+        and creator["creator_status"] == "approved"
+    ) if creator else False
+
     await state.clear()
     await state.set_state(UploadState.upload)
 
@@ -153,8 +175,22 @@ async def start_upload(call: CallbackQuery, state: FSMContext):
         "📦 <b>UPLOAD MODE</b>\n\n"
         "Silakan kirim file.\n"
         f"Maksimal {MAX_MEDIA} media.\n\n"
-        "Jika selesai tekan STOP & SAVE."
     )
+
+    if is_creator:
+        text += (
+            "🎨 Status : <b>Kreator Terverifikasi</b> ✅\n\n"
+            "Kamu dapat membuat file FREE maupun PAID.\n\n"
+        )
+    else:
+        text += (
+            "👤 Status : <b>User</b>\n\n"
+            "🆓 Kamu hanya dapat membuat file FREE.\n"
+            "🔒 Untuk membuat file PAID, kamu harus "
+            "menjadi Kreator terlebih dahulu.\n\n"
+        )
+
+    text += "Jika selesai tekan STOP & SAVE."
 
     try:
         await call.message.edit_text(
@@ -182,7 +218,8 @@ async def start_upload(call: CallbackQuery, state: FSMContext):
         price=0,
         payment_provider=None,
         saving=False,
-        progress_msg_id=progress_id
+        progress_msg_id=progress_id,
+        is_creator=is_creator
     )
 
 
@@ -208,7 +245,10 @@ async def generate_code():
 # ==========================================
 
 @router.message(F.document | F.video | F.photo)
-async def receive_media(message: Message, state: FSMContext):
+async def receive_media(
+    message: Message,
+    state: FSMContext
+):
 
     user_id = message.from_user.id
 
@@ -216,7 +256,10 @@ async def receive_media(message: Message, state: FSMContext):
 
         data = await state.get_data()
 
-        # Upload hanya jika user sudah menekan tombol Upload
+        # =====================================
+        # CEK MODE UPLOAD
+        # =====================================
+
         if not data.get("upload_mode"):
             return
 
@@ -227,38 +270,52 @@ async def receive_media(message: Message, state: FSMContext):
                 f"❌ Maksimal {MAX_MEDIA} media."
             )
 
-        try:
-            copied = await copy_to_storage(
-                message.bot,
-                message.chat.id,
-                message.message_id
-            )
-            storage_id = copied.message_id
+        # =====================================
+        # STATUS KREATOR
+        # =====================================
 
-        except Exception:
-            return await message.answer(
-                "⚠️ Gagal menyimpan ke storage."
-            )
+        is_creator = bool(
+            data.get("is_creator", False)
+        )
+
+        # =====================================
+        # AMBIL FILE ID
+        # =====================================
 
         if message.document:
+
             file_type = "document"
             file_id = message.document.file_id
             file_name = message.document.file_name
             file_size = message.document.file_size or 0
 
         elif message.video:
+
             file_type = "video"
             file_id = message.video.file_id
-            file_name = getattr(message.video, "file_name", None)
+            file_name = getattr(
+                message.video,
+                "file_name",
+                None
+            )
             file_size = message.video.file_size or 0
 
         else:
+
             file_type = "photo"
             file_id = message.photo[-1].file_id
             file_name = None
             file_size = message.photo[-1].file_size or 0
 
-        if any(x["file_id"] == file_id for x in media):
+        # =====================================
+        # CEK DUPLIKAT
+        # =====================================
+
+        if any(
+            x.get("file_id") == file_id
+            for x in media
+        ):
+
             try:
                 await message.delete()
             except Exception:
@@ -268,16 +325,72 @@ async def receive_media(message: Message, state: FSMContext):
                 "⚠️ File tersebut sudah ditambahkan."
             )
 
+        # =====================================
+        # DEFAULT DATA
+        # =====================================
+
+        storage_id = None
+
+        # =====================================
+        # KREATOR → COPY STORAGE
+        # USER BIASA → FILE ID SAJA
+        # =====================================
+
+        if is_creator:
+
+            try:
+
+                copied = await copy_to_storage(
+                    message.bot,
+                    message.chat.id,
+                    message.message_id
+                )
+
+                storage_id = copied.message_id
+
+            except Exception:
+
+                logging.exception(
+                    "CREATOR STORAGE ERROR"
+                )
+
+                return await message.answer(
+                    "⚠️ Gagal menyimpan file ke storage.\n"
+                    "Silakan coba lagi."
+                )
+
+        # =====================================
+        # SIMPAN MEDIA
+        # =====================================
+
         media.append({
+
+            # Kreator:
+            # message_id = storage channel message
+            #
+            # User biasa:
+            # message_id = None
+
             "message_id": storage_id,
+
             "file_id": file_id,
+
             "type": file_type,
+
             "file_name": file_name,
+
             "file_size": file_size,
+
             "position": len(media) + 1
         })
 
-        await state.update_data(media=media)
+        await state.update_data(
+            media=media
+        )
+
+        # =====================================
+        # KEYBOARD
+        # =====================================
 
         kb = InlineKeyboardBuilder()
 
@@ -293,20 +406,49 @@ async def receive_media(message: Message, state: FSMContext):
 
         kb.adjust(1)
 
-        progress_id = data.get("progress_msg_id")
+        # =====================================
+        # UPDATE PROGRESS
+        # =====================================
+
+        progress_id = data.get(
+            "progress_msg_id"
+        )
 
         if progress_id:
+
+            storage_text = (
+                "☁️ Storage Channel"
+                if is_creator
+                else "🆔 Telegram File ID"
+            )
+
             await safe_update(
+
                 message.bot,
+
                 message.chat.id,
+
                 progress_id,
+
                 (
                     "📦 <b>UPLOAD MODE</b>\n\n"
-                    f"📁 Media : <b>{len(media)}/{MAX_MEDIA}</b>\n\n"
-                    "Kirim lagi atau tekan STOP & SAVE."
+
+                    f"📁 Media : "
+                    f"<b>{len(media)}/{MAX_MEDIA}</b>\n"
+
+                    f"💾 Penyimpanan : "
+                    f"<b>{storage_text}</b>\n\n"
+
+                    "Kirim lagi atau tekan "
+                    "STOP & SAVE."
                 ),
+
                 kb.as_markup()
             )
+
+        # =====================================
+        # HAPUS PESAN USER
+        # =====================================
 
         try:
             await message.delete()
@@ -502,8 +644,30 @@ async def file_free(call: CallbackQuery, state: FSMContext):
         )
 
 
-@router.callback_query(F.data=="file_paid")
-async def file_paid(call:CallbackQuery,state:FSMContext):
+@router.callback_query(F.data == "file_paid")
+async def file_paid(
+    call: CallbackQuery,
+    state: FSMContext
+):
+
+    data = await state.get_data()
+
+    # =====================================
+    # CEK KREATOR
+    # =====================================
+
+    is_creator = bool(
+        data.get("is_creator", False)
+    )
+
+    if not is_creator:
+
+        await call.answer(
+            "🔒 Fitur PAID hanya tersedia untuk Kreator terverifikasi.",
+            show_alert=True
+        )
+
+        return
 
     await call.answer()
 
@@ -512,19 +676,50 @@ async def file_paid(call:CallbackQuery,state:FSMContext):
     )
 
     await call.message.edit_text(
+
         "💰 <b>MASUKKAN HARGA FILE</b>\n\n"
-        "Minimal Rp1.000.",
+
+        "Minimal <b>Rp1.000</b>.\n\n"
+
+        "🎨 Status : "
+        "<b>Kreator Terverifikasi</b> ✅",
+
         parse_mode="HTML"
     )
 
 @router.message(UploadState.wait_price)
-async def input_price(message: Message, state: FSMContext):
+async def input_price(
+    message: Message,
+    state: FSMContext
+):
 
     async with user_lock(message.from_user.id):
 
-        text = (message.text or "").replace(".", "").replace(",", "").strip()
+        data = await state.get_data()
+
+        # =====================================
+        # WAJIB KREATOR
+        # =====================================
+
+        if not data.get("is_creator", False):
+
+            await state.set_state(
+                UploadState.wait_title
+            )
+
+            return await message.answer(
+                "🔒 <b>PAID TERKUNCI</b>\n\n"
+                "Hanya Kreator terverifikasi yang "
+                "dapat membuat file berbayar.",
+                parse_mode="HTML"
+            )
+
+        text = (
+            message.text or ""
+        ).replace(".", "").replace(",", "").strip()
 
         if not text.isdigit():
+
             return await message.answer(
                 "❌ Harga harus berupa angka."
             )
@@ -532,21 +727,27 @@ async def input_price(message: Message, state: FSMContext):
         price = int(text)
 
         if price < 1000:
+
             return await message.answer(
                 "❌ Harga minimal Rp1.000."
             )
 
         await state.update_data(
+
             is_paid=True,
+
             price=price,
+
             payment_provider="bayargg"
         )
 
         saving_msg = await message.answer(
+
             (
                 "⏳ <b>Menyimpan file...</b>\n\n"
                 f"💰 Harga : Rp{price:,}"
             ).replace(",", "."),
+
             parse_mode="HTML"
         )
 
@@ -555,8 +756,11 @@ async def input_price(message: Message, state: FSMContext):
         )
 
         await finalize_save(
+
             message,
+
             state,
+
             message.from_user.id
         )
 
@@ -573,7 +777,7 @@ async def finalize_save(message: Message, state: FSMContext, user_id: int):
     try:
         media = [
             x for x in data.get("media", [])
-            if x.get("message_id") and x.get("file_id")
+            if x.get("file_id")
         ]
 
         if not media:
@@ -598,7 +802,7 @@ async def finalize_save(message: Message, state: FSMContext, user_id: int):
         for item in media:
             values.append((
                 code,
-                int(item["message_id"]),
+                item.get("message_id"),
                 item["file_id"],
                 item["type"],
                 item.get("file_size", 0),
