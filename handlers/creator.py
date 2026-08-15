@@ -13,6 +13,7 @@ from aiogram.types import (
 
 from database import get_pool
 
+ADMIN_ID = 123456789
 
 router = Router()
 
@@ -365,12 +366,20 @@ async def creator_submit(
         "contact"
     )
 
+    # =====================================
+    # CEK DATA FORM
+    # =====================================
+
     if not telegram_username or not contact:
 
         return await call.answer(
             "❌ Data verifikasi belum lengkap.",
             show_alert=True
         )
+
+    # =====================================
+    # AMBIL DATA USER
+    # =====================================
 
     user = await pool.fetchrow(
         """
@@ -396,6 +405,10 @@ async def creator_submit(
 
     referral_count = user["referral_count"] or 0
 
+    # =====================================
+    # CEK REFERRAL
+    # =====================================
+
     if referral_count < CREATOR_REQUIRED_REFERRAL:
 
         await state.clear()
@@ -404,6 +417,10 @@ async def creator_submit(
             "❌ Syarat referral sudah tidak terpenuhi.",
             show_alert=True
         )
+
+    # =====================================
+    # CEK PENDING
+    # =====================================
 
     if user["creator_status"] == "pending":
 
@@ -415,7 +432,7 @@ async def creator_submit(
         )
 
     # =====================================
-    # SIMPAN DATA
+    # SIMPAN DATA KREATOR
     # =====================================
 
     await pool.execute(
@@ -425,12 +442,100 @@ async def creator_submit(
             creator_status = 'pending',
             is_creator = FALSE,
             phone = $2,
+            creator_telegram = $3,
             updated_at = NOW()
         WHERE user_id = $1
         """,
         call.from_user.id,
-        contact
+        contact,
+        telegram_username
     )
+
+    # =====================================
+    # BUAT NOTIFIKASI ADMIN
+    # =====================================
+
+    admin_text = (
+        "🎨 <b>PENGAJUAN KREATOR BARU</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+
+        f"👤 User : <b>{user['fullname'] or '-'}</b>\n"
+        f"🆔 ID : <code>{user['user_id']}</code>\n"
+        f"🔗 Username : "
+        f"<b>{user['username'] or '-'}</b>\n\n"
+
+        f"👥 Referral : "
+        f"<b>{referral_count}</b>\n\n"
+
+        f"📱 Telegram : "
+        f"<b>{telegram_username}</b>\n"
+
+        f"📞 Kontak : "
+        f"<code>{contact}</code>\n\n"
+
+        "⏳ Status : <b>PENDING</b>"
+    )
+
+    admin_keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ TERIMA",
+                    callback_data=(
+                        f"creator_approve:{user['user_id']}"
+                    )
+                ),
+                InlineKeyboardButton(
+                    text="❌ TOLAK",
+                    callback_data=(
+                        f"creator_reject:{user['user_id']}"
+                    )
+                )
+            ]
+        ]
+    )
+
+    # =====================================
+    # KIRIM KE ADMIN
+    # =====================================
+
+    try:
+
+        await call.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=admin_text,
+            parse_mode="HTML",
+            reply_markup=admin_keyboard
+        )
+
+    except Exception:
+
+        logging.exception(
+            "Gagal mengirim pengajuan Kreator ke admin"
+        )
+
+        # Kalau gagal kirim ke admin,
+        # jangan biarkan user mengira sudah berhasil.
+
+        await pool.execute(
+            """
+            UPDATE users
+            SET
+                creator_status = 'none',
+                is_creator = FALSE
+            WHERE user_id = $1
+            """,
+            call.from_user.id
+        )
+
+        return await call.answer(
+            "❌ Gagal mengirim pengajuan ke admin.",
+            show_alert=True
+        )
+
+    # =====================================
+    # SELESAI
+    # =====================================
 
     await state.clear()
 
@@ -442,6 +547,7 @@ async def creator_submit(
 
         "⏳ Status : <b>Menunggu Verifikasi</b>\n\n"
 
+        "Pengajuan kamu sudah dikirim ke admin.\n"
         "Admin akan memeriksa data kamu terlebih "
         "dahulu sebelum memberikan status Kreator.\n\n"
 
