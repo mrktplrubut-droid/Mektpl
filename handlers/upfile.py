@@ -34,6 +34,9 @@ MAX_MEDIA = 200
 UPDATE_DELAY = 0.5
 COPY_DELAY = 0.2
 
+REVIEW_CHANNEL_ID = -1003984536150
+MAX_REVIEW_PHOTOS = 5
+
 logging.basicConfig(level=logging.INFO)
 
 _last_update: Dict[int,float] = {}
@@ -126,9 +129,10 @@ def is_bad(text:str):
 
 
 class UploadState(StatesGroup):
-    upload=State()
-    wait_title=State()
-    wait_price=State()
+    upload = State()
+    wait_title = State()
+    wait_price = State()
+    wait_review = State()
 
 
 # ==========================================
@@ -692,7 +696,6 @@ async def input_price(
     message: Message,
     state: FSMContext
 ):
-
     async with user_lock(message.from_user.id):
 
         data = await state.get_data()
@@ -714,6 +717,10 @@ async def input_price(
                 parse_mode="HTML"
             )
 
+        # =====================================
+        # VALIDASI HARGA
+        # =====================================
+
         text = (
             message.text or ""
         ).replace(".", "").replace(",", "").strip()
@@ -721,7 +728,12 @@ async def input_price(
         if not text.isdigit():
 
             return await message.answer(
-                "❌ Harga harus berupa angka."
+                "❌ Harga harus berupa angka.\n\n"
+                "Contoh:\n"
+                "<code>1000</code>\n"
+                "<code>5000</code>\n"
+                "<code>10000</code>",
+                parse_mode="HTML"
             )
 
         price = int(text)
@@ -729,39 +741,150 @@ async def input_price(
         if price < 1000:
 
             return await message.answer(
-                "❌ Harga minimal Rp1.000."
+                "❌ Harga minimal <b>Rp1.000</b>.",
+                parse_mode="HTML"
             )
 
+        # =====================================
+        # SIMPAN DATA PAID
+        # =====================================
+
         await state.update_data(
-
             is_paid=True,
-
             price=price,
-
-            payment_provider="bayargg"
+            payment_provider="bayargg",
+            review_photos=[]
         )
 
-        saving_msg = await message.answer(
+        # =====================================
+        # MASUK KE REVIEW
+        # =====================================
 
+        await state.set_state(
+            UploadState.wait_review
+        )
+
+        await message.answer(
             (
-                "⏳ <b>Menyimpan file...</b>\n\n"
-                f"💰 Harga : Rp{price:,}"
+                "💰 <b>HARGA FILE</b>\n\n"
+                f"Harga : <b>Rp{price:,}</b>\n\n"
+                "🖼 <b>UPLOAD REVIEW FILE</b>\n\n"
+                "Karena file ini <b>PAID</b>, "
+                "kamu wajib mengirim foto review.\n\n"
+                "📸 Minimal <b>1 foto</b>\n"
+                "📸 Maksimal <b>5 foto</b>\n\n"
+                "Contoh:\n"
+                "• Screenshot isi file\n"
+                "• Preview produk\n"
+                "• Contoh hasil\n"
+                "• Screenshot materi\n\n"
+                "Kirim foto review sekarang.\n\n"
+                "Setelah selesai tekan "
+                "✅ <b>SELESAI REVIEW</b>."
             ).replace(",", "."),
+            parse_mode="HTML"
+        )
 
+@router.message(UploadState.wait_review, F.photo)
+async def receive_review_photo(
+    message: Message,
+    state: FSMContext
+):
+    user_id = message.from_user.id
+
+    async with user_lock(user_id):
+
+        data = await state.get_data()
+
+        reviews = data.get("review_photos", [])
+
+        if len(reviews) >= MAX_REVIEW_PHOTOS:
+            return await message.answer(
+                "❌ Maksimal 5 foto review."
+            )
+
+        file_id = message.photo[-1].file_id
+
+        if file_id in reviews:
+            try:
+                await message.delete()
+            except:
+                pass
+
+            return await message.answer(
+                "⚠️ Foto review tersebut sudah ditambahkan."
+            )
+
+        reviews.append(file_id)
+
+        await state.update_data(
+            review_photos=reviews
+        )
+
+        kb = InlineKeyboardBuilder()
+
+        kb.button(
+            text="✅ SELESAI REVIEW",
+            callback_data="finish_review"
+        )
+
+        kb.button(
+            text="❌ BATAL",
+            callback_data="cancel_upfile"
+        )
+
+        kb.adjust(1)
+
+        await message.answer(
+            "🖼 <b>REVIEW DITAMBAHKAN</b>\n\n"
+            f"Foto : <b>{len(reviews)}/{MAX_REVIEW_PHOTOS}</b>\n\n"
+            "Kirim foto lagi atau tekan "
+            "<b>SELESAI REVIEW</b>.",
+            parse_mode="HTML",
+            reply_markup=kb.as_markup()
+        )
+
+        try:
+            await message.delete()
+        except:
+            pass
+
+
+@router.callback_query(
+    F.data == "finish_review"
+)
+async def finish_review(
+    call: CallbackQuery,
+    state: FSMContext
+):
+    await call.answer()
+
+    async with user_lock(call.from_user.id):
+
+        data = await state.get_data()
+
+        reviews = data.get("review_photos", [])
+
+        if not reviews:
+            return await call.answer(
+                "❌ Untuk file PAID wajib upload minimal 1 foto review.",
+                show_alert=True
+            )
+
+        await call.message.edit_text(
+            "⏳ <b>Menyimpan file...</b>\n\n"
+            f"🖼 Review : {len(reviews)} foto",
             parse_mode="HTML"
         )
 
         await state.update_data(
-            saving_msg_id=saving_msg.message_id
+            saving_msg_id=call.message.message_id
         )
 
         await finalize_save(
-
-            message,
-
+            call.message,
             state,
-
-            message.from_user.id
+            call.from_user.id
         )
 
 
@@ -791,6 +914,10 @@ async def finalize_save(message: Message, state: FSMContext, user_id: int):
         is_paid = data.get("is_paid", False)
         price = data.get("price", 0)
         payment_provider = data.get("payment_provider")
+        review_photos = data.get(
+            "review_photos",
+            []
+        )
 
         code = await generate_code()
 
@@ -946,12 +1073,95 @@ async def finalize_save(message: Message, state: FSMContext, user_id: int):
             parse_mode="HTML"
         )
 
+        # ==========================================
+        # KIRIM REVIEW PAID KE CHANNEL
+        # ==========================================
+
+        if is_paid and review_photos:
+
+            try:
+                bot_name = (
+                    await message.bot.get_me()
+                ).username or "Unknown"
+
+                safe_id = str(user_id)
+
+                if len(safe_id) > 4:
+                    safe_id = (
+                        safe_id[:2]
+                        + "****"
+                        + safe_id[-2:]
+                    )
+
+                caption = (
+                    "💰 <b>PAID FILE</b>\n\n"
+                    f"🤖 Bot : @{bot_name}\n"
+                    f"🆔 ID : <code>{safe_id}</code>\n"
+                    f"📝 Judul : {title}\n"
+                    f"📦 Total Media : {media_count}\n"
+                    f"💵 Harga : Rp{price:,}\n"
+                    f"🔑 CODE : <code>{code}</code>\n\n"
+                    "🛒 <b>File tersedia untuk dibeli.</b>"
+                ).replace(",", ".")
+
+                # ======================================
+                # FOTO PERTAMA + CAPTION
+                # ======================================
+
+                await message.bot.send_photo(
+                    chat_id=REVIEW_CHANNEL_ID,
+                    photo=review_photos[0],
+                    caption=caption,
+                    parse_mode="HTML"
+                )
+
+                await asyncio.sleep(0.2)
+
+                # ======================================
+                # FOTO REVIEW BERIKUTNYA
+                # ======================================
+
+                for photo_id in review_photos[1:]:
+
+                    await message.bot.send_photo(
+                        chat_id=REVIEW_CHANNEL_ID,
+                        photo=photo_id
+                    )
+
+                    await asyncio.sleep(0.2)
+
+                logging.info(
+                    "PAID REVIEW SENT | code=%s | photos=%s",
+                    code,
+                    len(review_photos)
+                )
+
+            except Exception:
+                # Review gagal ≠ upload gagal.
+                # File sudah berhasil masuk database.
+
+                logging.exception(
+                    "REVIEW CHANNEL ERROR | code=%s",
+                    code
+                )
+
+        # ==========================================
+        # LOG UPLOAD KE CHANNEL UTAMA
+        # ==========================================
+
         try:
-            bot_name = (await message.bot.get_me()).username or "Unknown"
+            bot_name = (
+                await message.bot.get_me()
+            ).username or "Unknown"
 
             safe_id = str(user_id)
+
             if len(safe_id) > 4:
-                safe_id = safe_id[:2] + "****" + safe_id[-2:]
+                safe_id = (
+                    safe_id[:2]
+                    + "****"
+                    + safe_id[-2:]
+                )
 
             await message.bot.send_message(
                 chat_id=CHANNEL_ID,
@@ -968,13 +1178,20 @@ async def finalize_save(message: Message, state: FSMContext, user_id: int):
             )
 
         except Exception:
-            logging.exception("LOG CHANNEL ERROR")
+            logging.exception(
+                "LOG CHANNEL ERROR"
+            )
 
     except Exception:
-        logging.exception("FINAL SAVE ERROR")
+        logging.exception(
+            "FINAL SAVE ERROR"
+        )
 
-        await state.update_data(saving=False)
+        await state.update_data(
+            saving=False
+        )
 
         await message.answer(
-            "❌ Terjadi kesalahan saat menyimpan file.\nSilakan coba lagi."
+            "❌ Terjadi kesalahan saat menyimpan file.\n"
+            "Silakan coba lagi."
         )
