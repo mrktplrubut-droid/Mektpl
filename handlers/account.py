@@ -8,6 +8,7 @@ from aiogram.types import (
 
 from database import get_pool
 
+
 router = Router()
 
 BOT_USERNAME = "botmarketRobot"
@@ -15,7 +16,14 @@ BOT_USERNAME = "botmarketRobot"
 CREATOR_REQUIRED_REFERRAL = 100
 
 
-async def open_account(message: Message, user_id: int):
+# =====================================
+# OPEN ACCOUNT
+# =====================================
+
+async def open_account(
+    message: Message,
+    user_id: int
+):
 
     pool = await get_pool()
 
@@ -34,14 +42,32 @@ async def open_account(message: Message, user_id: int):
     )
 
     if not user:
+
         return await message.edit_text(
             "❌ Data akun tidak ditemukan."
         )
 
-    referral_count = user["referral_count"] or 0
-    is_creator = bool(user["is_creator"])
-    creator_status = user["creator_status"] or "none"
+    referral_count = (
+        user["referral_count"] or 0
+    )
+
+    is_creator = bool(
+        user["is_creator"]
+    )
+
+    creator_status = (
+        user["creator_status"] or "none"
+    )
+
+    creator_verified_at = (
+        user["creator_verified_at"]
+    )
+
     balance = user["balance"] or 0
+
+    # =====================================
+    # REFERRAL LINK
+    # =====================================
 
     ref_link = (
         f"https://t.me/{BOT_USERNAME}"
@@ -52,12 +78,22 @@ async def open_account(message: Message, user_id: int):
     # STATUS KREATOR
     # =====================================
 
-    if is_creator and creator_status == "approved":
+    if (
+        is_creator
+        and creator_status == "approved"
+    ):
 
         creator_text = (
-            "🎨 <b>KREATOR</b>\n"
-            "✅ Terverifikasi"
+            "🎨 <b>STATUS KREATOR</b>\n"
+            "✅ <b>Terverifikasi</b>\n"
         )
+
+        if creator_verified_at:
+
+            creator_text += (
+                f"📅 Verifikasi : "
+                f"<b>{creator_verified_at:%d-%m-%Y}</b>\n"
+            )
 
         creator_button = InlineKeyboardButton(
             text="🎨 Kreator ✅",
@@ -67,8 +103,8 @@ async def open_account(message: Message, user_id: int):
     elif creator_status == "pending":
 
         creator_text = (
-            "🎨 <b>KREATOR</b>\n"
-            "⏳ Menunggu Verifikasi"
+            "🎨 <b>STATUS KREATOR</b>\n"
+            "⏳ <b>Menunggu Verifikasi Admin</b>\n"
         )
 
         creator_button = InlineKeyboardButton(
@@ -79,8 +115,8 @@ async def open_account(message: Message, user_id: int):
     elif creator_status == "rejected":
 
         creator_text = (
-            "🎨 <b>KREATOR</b>\n"
-            "❌ Pengajuan Ditolak"
+            "🎨 <b>STATUS KREATOR</b>\n"
+            "❌ <b>Pengajuan Ditolak</b>\n"
         )
 
         creator_button = InlineKeyboardButton(
@@ -88,13 +124,17 @@ async def open_account(message: Message, user_id: int):
             callback_data="creator_apply"
         )
 
-    elif referral_count >= CREATOR_REQUIRED_REFERRAL:
+    elif (
+        referral_count
+        >= CREATOR_REQUIRED_REFERRAL
+    ):
 
         creator_text = (
-            "🎨 <b>KREATOR</b>\n"
-            "🔓 Syarat Terpenuhi\n"
+            "🎨 <b>STATUS KREATOR</b>\n"
+            "🔓 <b>Syarat Terpenuhi</b>\n"
             f"👥 Referral : "
-            f"{referral_count}/{CREATOR_REQUIRED_REFERRAL}"
+            f"<b>{referral_count}/"
+            f"{CREATOR_REQUIRED_REFERRAL}</b>\n"
         )
 
         creator_button = InlineKeyboardButton(
@@ -104,11 +144,19 @@ async def open_account(message: Message, user_id: int):
 
     else:
 
+        remaining = (
+            CREATOR_REQUIRED_REFERRAL
+            - referral_count
+        )
+
         creator_text = (
-            "🎨 <b>KREATOR</b>\n"
-            "🔒 Belum Memenuhi Syarat\n"
+            "🎨 <b>STATUS KREATOR</b>\n"
+            "🔒 <b>Belum Memenuhi Syarat</b>\n"
             f"👥 Referral : "
-            f"{referral_count}/{CREATOR_REQUIRED_REFERRAL}"
+            f"<b>{referral_count}/"
+            f"{CREATOR_REQUIRED_REFERRAL}</b>\n"
+            f"📊 Kekurangan : "
+            f"<b>{remaining} referral</b>\n"
         )
 
         creator_button = InlineKeyboardButton(
@@ -117,7 +165,7 @@ async def open_account(message: Message, user_id: int):
         )
 
     # =====================================
-    # TEXT ACCOUNT
+    # ACCOUNT TEXT
     # =====================================
 
     text = (
@@ -145,12 +193,14 @@ async def open_account(message: Message, user_id: int):
     # =====================================
 
     keyboard_rows = [
+
         [
             InlineKeyboardButton(
                 text="📂 My Code",
                 callback_data="my_code"
             )
         ],
+
         [
             creator_button
         ]
@@ -160,7 +210,10 @@ async def open_account(message: Message, user_id: int):
     # WITHDRAW
     # =====================================
 
-    if is_creator and creator_status == "approved":
+    if (
+        is_creator
+        and creator_status == "approved"
+    ):
 
         keyboard_rows.append(
             [
@@ -207,8 +260,12 @@ async def open_account(message: Message, user_id: int):
 # ACCOUNT CALLBACK
 # =====================================
 
-@router.callback_query(F.data == "account")
-async def account_handler(call: CallbackQuery):
+@router.callback_query(
+    F.data == "account"
+)
+async def account_handler(
+    call: CallbackQuery
+):
 
     await open_account(
         call.message,
@@ -222,8 +279,14 @@ async def account_handler(call: CallbackQuery):
 # ACCOUNT REPLY BUTTON
 # =====================================
 
-@router.message(F.text.in_(["👤 Akun", "👤 Account"]))
-async def account(message: Message):
+@router.message(
+    F.text.in_(
+        ["👤 Akun", "👤 Account"]
+    )
+)
+async def account(
+    message: Message
+):
 
     loading = await message.answer(
         "⏳ Loading..."
@@ -239,101 +302,10 @@ async def account(message: Message):
 # WITHDRAW LOCKED
 # =====================================
 
-@router.callback_query(F.data == "withdraw_locked")
-async def withdraw_locked(call: CallbackQuery):
-
-    pool = await get_pool()
-
-    user = await pool.fetchrow(
-        """
-        SELECT
-            referral_count,
-            is_creator,
-            creator_status
-        FROM users
-        WHERE user_id = $1
-        """,
-        call.from_user.id
-    )
-
-    referral_count = (
-        user["referral_count"]
-        if user
-        else 0
-    )
-
-    is_creator = (
-        bool(user["is_creator"])
-        if user
-        else False
-    )
-
-    creator_status = (
-        user["creator_status"]
-        if user
-        else "none"
-    )
-
-    if is_creator and creator_status == "approved":
-
-        await call.answer(
-            "✅ Kamu sudah menjadi Kreator.",
-            show_alert=True
-        )
-
-        return
-
-    remaining = max(
-        0,
-        CREATOR_REQUIRED_REFERRAL - referral_count
-    )
-
-    if creator_status == "pending":
-
-        text = (
-            "⏳ <b>VERIFIKASI KREATOR</b>\n\n"
-            "Pengajuan Kreator kamu sedang "
-            "diperiksa oleh admin.\n\n"
-            "Mohon tunggu sampai proses verifikasi selesai."
-        )
-
-    elif referral_count >= CREATOR_REQUIRED_REFERRAL:
-
-        text = (
-            "🔒 <b>WITHDRAW TERKUNCI</b>\n\n"
-            "Kamu sudah memenuhi syarat referral "
-            "untuk menjadi Kreator.\n\n"
-            f"👥 Referral : "
-            f"{referral_count}/{CREATOR_REQUIRED_REFERRAL}\n\n"
-            "Silakan ajukan verifikasi Kreator "
-            "terlebih dahulu."
-        )
-
-    else:
-
-        text = (
-            "🔒 <b>WITHDRAW TERKUNCI</b>\n\n"
-            "Fitur Withdraw hanya tersedia untuk "
-            "Kreator yang sudah terverifikasi.\n\n"
-            f"👥 Referral : "
-            f"{referral_count}/{CREATOR_REQUIRED_REFERRAL}\n"
-            f"📊 Kekurangan : {remaining} referral\n\n"
-            "Capai 100 referral terlebih dahulu "
-            "untuk mengajukan verifikasi Kreator."
-        )
-
-    await call.answer(
-        text,
-        show_alert=True
-    )
-
-
-# =====================================
-# CREATOR STATUS
-# =====================================
-
-@router.callback_query(F.data == "creator_status")
-async def creator_status_handler(
+@router.callback_query(
+    F.data == "withdraw_locked"
+)
+async def withdraw_locked(
     call: CallbackQuery
 ):
 
@@ -358,45 +330,241 @@ async def creator_status_handler(
             show_alert=True
         )
 
-    referral_count = user["referral_count"] or 0
-    is_creator = bool(user["is_creator"])
-    status = user["creator_status"] or "none"
+    referral_count = (
+        user["referral_count"] or 0
+    )
 
-    if is_creator and status == "approved":
+    is_creator = bool(
+        user["is_creator"]
+    )
+
+    creator_status = (
+        user["creator_status"] or "none"
+    )
+
+    # =====================================
+    # SUDAH KREATOR
+    # =====================================
+
+    if (
+        is_creator
+        and creator_status == "approved"
+    ):
+
+        return await call.answer(
+            "✅ Kamu sudah menjadi Kreator.\n"
+            "Silakan buka menu Withdraw.",
+            show_alert=True
+        )
+
+    # =====================================
+    # PENDING
+    # =====================================
+
+    if creator_status == "pending":
+
+        return await call.answer(
+            "⏳ Pengajuan Kreator kamu sedang "
+            "diperiksa oleh admin.\n\n"
+            "Withdraw akan terbuka setelah "
+            "verifikasi disetujui.",
+            show_alert=True
+        )
+
+    # =====================================
+    # SUDAH 100 REFERRAL
+    # =====================================
+
+    if (
+        referral_count
+        >= CREATOR_REQUIRED_REFERRAL
+    ):
+
+        return await call.answer(
+            "🔒 Withdraw masih terkunci.\n\n"
+            "Kamu sudah memenuhi 100 referral. "
+            "Silakan ajukan verifikasi Kreator.",
+            show_alert=True
+        )
+
+    # =====================================
+    # BELUM CUKUP
+    # =====================================
+
+    remaining = (
+        CREATOR_REQUIRED_REFERRAL
+        - referral_count
+    )
+
+    await call.answer(
+        "🔒 <b>WITHDRAW TERKUNCI</b>\n\n"
+        "Withdraw hanya tersedia untuk "
+        "Kreator terverifikasi.\n\n"
+        f"👥 Referral : "
+        f"{referral_count}/"
+        f"{CREATOR_REQUIRED_REFERRAL}\n"
+        f"📊 Kekurangan : "
+        f"{remaining} referral",
+        show_alert=True
+    )
+
+
+# =====================================
+# CREATOR STATUS
+# =====================================
+
+@router.callback_query(
+    F.data == "creator_status"
+)
+async def creator_status_handler(
+    call: CallbackQuery
+):
+
+    pool = await get_pool()
+
+    user = await pool.fetchrow(
+        """
+        SELECT
+            referral_count,
+            is_creator,
+            creator_status,
+            creator_verified_at
+        FROM users
+        WHERE user_id = $1
+        """,
+        call.from_user.id
+    )
+
+    if not user:
+
+        return await call.answer(
+            "❌ Data akun tidak ditemukan.",
+            show_alert=True
+        )
+
+    referral_count = (
+        user["referral_count"] or 0
+    )
+
+    is_creator = bool(
+        user["is_creator"]
+    )
+
+    status = (
+        user["creator_status"] or "none"
+    )
+
+    verified_at = (
+        user["creator_verified_at"]
+    )
+
+    # =====================================
+    # APPROVED
+    # =====================================
+
+    if (
+        is_creator
+        and status == "approved"
+    ):
+
+        verified_text = ""
+
+        if verified_at:
+
+            verified_text = (
+                f"\n📅 Terverifikasi : "
+                f"<b>{verified_at:%d-%m-%Y}</b>\n"
+            )
 
         text = (
-            "🎨 <b>STATUS KREATOR</b>\n\n"
-            "Status : ✅ <b>Kreator Terverifikasi</b>\n\n"
-            f"👥 Referral : <b>{referral_count}</b>\n\n"
-            "Kamu sudah bisa menjual file berbayar "
-            "dan mendapatkan saldo dari penjualan."
+            "🎨 <b>STATUS KREATOR</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+
+            "Status : "
+            "✅ <b>Kreator Terverifikasi</b>\n"
+
+            f"{verified_text}\n"
+
+            f"👥 Referral : "
+            f"<b>{referral_count}</b>\n\n"
+
+            "🎉 Kamu sudah resmi menjadi Kreator.\n\n"
+
+            "Kamu dapat:\n"
+            "📤 Menjual file berbayar\n"
+            "💰 Mendapatkan saldo dari penjualan\n"
+            "🏦 Melakukan Withdraw\n"
         )
+
+    # =====================================
+    # PENDING
+    # =====================================
 
     elif status == "pending":
 
         text = (
-            "🎨 <b>STATUS KREATOR</b>\n\n"
-            "Status : ⏳ <b>Menunggu Verifikasi</b>\n\n"
-            "Pengajuan kamu sedang diperiksa oleh admin."
+            "🎨 <b>STATUS KREATOR</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+
+            "Status : "
+            "⏳ <b>Menunggu Verifikasi</b>\n\n"
+
+            "Pengajuan kamu sedang diperiksa "
+            "oleh admin.\n\n"
+
+            "Mohon tunggu sampai proses "
+            "verifikasi selesai."
         )
+
+    # =====================================
+    # REJECTED
+    # =====================================
 
     elif status == "rejected":
 
         text = (
-            "🎨 <b>STATUS KREATOR</b>\n\n"
+            "🎨 <b>STATUS KREATOR</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+
             "Status : ❌ <b>Ditolak</b>\n\n"
-            "Kamu dapat mengajukan verifikasi kembali."
+
+            f"👥 Referral : "
+            f"<b>{referral_count}/"
+            f"{CREATOR_REQUIRED_REFERRAL}</b>\n\n"
+
+            "Kamu dapat mengajukan verifikasi "
+            "kembali."
         )
 
-    elif referral_count >= CREATOR_REQUIRED_REFERRAL:
+    # =====================================
+    # READY
+    # =====================================
+
+    elif (
+        referral_count
+        >= CREATOR_REQUIRED_REFERRAL
+    ):
 
         text = (
-            "🎨 <b>STATUS KREATOR</b>\n\n"
-            "Status : 🔓 <b>Syarat Terpenuhi</b>\n\n"
+            "🎨 <b>STATUS KREATOR</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+
+            "Status : 🔓 "
+            "<b>Syarat Terpenuhi</b>\n\n"
+
             f"👥 Referral : "
-            f"<b>{referral_count}/{CREATOR_REQUIRED_REFERRAL}</b>\n\n"
-            "Kamu sudah bisa mengajukan verifikasi Kreator."
+            f"<b>{referral_count}/"
+            f"{CREATOR_REQUIRED_REFERRAL}</b>\n\n"
+
+            "🎉 Kamu sudah memenuhi syarat "
+            "untuk menjadi Kreator.\n\n"
+
+            "Silakan lanjutkan proses verifikasi."
         )
+
+    # =====================================
+    # NOT ENOUGH
+    # =====================================
 
     else:
 
@@ -406,21 +574,36 @@ async def creator_status_handler(
         )
 
         text = (
-            "🎨 <b>STATUS KREATOR</b>\n\n"
-            "Status : 🔒 <b>Belum Memenuhi Syarat</b>\n\n"
+            "🎨 <b>STATUS KREATOR</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+
+            "Status : 🔒 "
+            "<b>Belum Memenuhi Syarat</b>\n\n"
+
             f"👥 Referral : "
-            f"<b>{referral_count}/{CREATOR_REQUIRED_REFERRAL}</b>\n"
-            f"📊 Kekurangan : <b>{remaining}</b>\n\n"
-            "Capai 100 referral terlebih dahulu."
+            f"<b>{referral_count}/"
+            f"{CREATOR_REQUIRED_REFERRAL}</b>\n"
+
+            f"📊 Kekurangan : "
+            f"<b>{remaining} referral</b>\n\n"
+
+            "Capai 100 referral terlebih dahulu "
+            "untuk mengajukan verifikasi."
         )
+
+    # =====================================
+    # BUTTON
+    # =====================================
 
     buttons = []
 
     if (
-        referral_count >= CREATOR_REQUIRED_REFERRAL
+        not is_creator
         and status in ("none", "rejected")
-        and not is_creator
+        and referral_count
+        >= CREATOR_REQUIRED_REFERRAL
     ):
+
         buttons.append(
             [
                 InlineKeyboardButton(
