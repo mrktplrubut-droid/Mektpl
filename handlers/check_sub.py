@@ -8,130 +8,195 @@ from utils.force_sub import check_force_sub
 from keyboards.join import join_kb
 from handlers.start import render_home_fast
 from database import get_pool
-from utils.user import get_user_status
 
 router = Router()
 
+
+# =========================================================
+# CHECK SUB
+# =========================================================
 
 @router.callback_query(F.data == "check_sub")
 async def check_sub_callback(call: CallbackQuery):
 
     user_id = call.from_user.id
-    username = call.from_user.username or "unknown"
 
-    logging.info(f"CHECK SUB CLICKED: {user_id}")
+    username = (
+        f"@{call.from_user.username}"
+        if call.from_user.username
+        else call.from_user.full_name
+    )
+
+    logging.info(
+        f"CHECK SUB CLICKED: {user_id}"
+    )
+
+    # =====================================================
+    # CEK FORCE SUB
+    # =====================================================
 
     try:
 
-        ok = await check_force_sub(call.bot, user_id)
+        ok = await check_force_sub(
+            call.bot,
+            user_id
+        )
 
-        logging.info(f"FORCE SUB RESULT: {ok}")
+        logging.info(
+            f"FORCE SUB RESULT: {ok}"
+        )
 
-        if not ok:
+    except Exception:
 
-            await call.answer(
-                "❌ Kamu belum join semua channel.",
-                show_alert=True
+        logging.exception(
+            "FORCE SUB CHECK ERROR"
+        )
+
+        return await call.answer(
+            "❌ Gagal mengecek membership.",
+            show_alert=True
+        )
+
+    # =====================================================
+    # BELUM JOIN
+    # =====================================================
+
+    if not ok:
+
+        await call.answer(
+            "❌ Kamu belum join semua channel.",
+            show_alert=True
+        )
+
+        try:
+
+            await call.message.edit_text(
+                (
+                    "❌ <b>JOIN REQUIRED</b>\n\n"
+                    "Silakan join semua channel terlebih dahulu.\n\n"
+                    "Setelah selesai, tekan tombol "
+                    "<b>✅ CHECK</b>."
+                ),
+                parse_mode="HTML",
+                reply_markup=join_kb()
             )
 
-            try:
-                await call.message.edit_text(
-                    "❌ Kamu belum join semua channel.\n\n"
-                    "Silakan join dulu lalu klik CHECK lagi.",
-                    reply_markup=join_kb()
+        except TelegramBadRequest as e:
+
+            if "message is not modified" not in str(e).lower():
+                logging.exception(
+                    "JOIN MESSAGE EDIT ERROR"
                 )
-            except TelegramBadRequest as e:
-                if "message is not modified" not in str(e):
-                    raise
 
-            return
+        return
 
+    # =====================================================
+    # SUDAH JOIN
+    # =====================================================
 
-        pool = await get_pool()
+    pool = await get_pool()
 
+    # =====================================================
+    # CREATE / UPDATE USER
+    # =====================================================
 
-        # =========================
-        # CREATE / UPDATE USER
-        # =========================
+    try:
+
         await pool.execute(
             """
             INSERT INTO users (
                 user_id,
-                chat_id,
                 username,
-                full_name,
-                balance
+                fullname,
+                chat_id,
+                last_seen
             )
-            VALUES ($1, $1, $2, $3, 0)
+            VALUES (
+                $1,
+                $2,
+                $3,
+                $1,
+                NOW()
+            )
 
             ON CONFLICT (user_id)
             DO UPDATE SET
                 username = EXCLUDED.username,
-                full_name = EXCLUDED.full_name
+                fullname = EXCLUDED.fullname,
+                chat_id = EXCLUDED.chat_id,
+                last_seen = NOW()
             """,
+
             user_id,
             username,
             call.from_user.full_name
         )
 
+    except Exception:
 
-        # =========================
-        # FETCH USER
-        # =========================
-        user = await pool.fetchrow(
-            """
-            SELECT username
-            FROM users
-            WHERE user_id=$1
-            """,
-            user_id
+        logging.exception(
+            "CREATE / UPDATE USER ERROR"
         )
 
-
-        if not user:
-
-            logging.warning(
-                f"USER STILL NULL: {user_id}"
-            )
-
-            await render_home_fast(
-                call.bot,
-                call.message,
-                user_id,
-                username,
-                "free"
-            )
-
-            return
-
-
-        status = await get_user_status(
-            pool,
-            user_id
+        return await call.answer(
+            "❌ Gagal memperbarui data user.",
+            show_alert=True
         )
 
+    # =====================================================
+    # VERIFIKASI BERHASIL
+    # =====================================================
 
-        await call.answer(
-            "✅ Verifikasi berhasil"
-        )
+    await call.answer(
+        "✅ Verifikasi berhasil!"
+    )
 
+    # =====================================================
+    # LANGSUNG TAMPILKAN HOME
+    #
+    # Pesan JOIN akan diedit menjadi HOME.
+    # Jadi tombol JOIN / CHECK otomatis hilang.
+    # =====================================================
+
+    try:
 
         await render_home_fast(
             call.bot,
             call.message,
             user_id,
-            user["username"] or username,
-            status
+            username
         )
 
+    except TelegramBadRequest as e:
 
-    except Exception as e:
+        if "message is not modified" not in str(e).lower():
+
+            logging.exception(
+                "RENDER HOME AFTER JOIN ERROR"
+            )
+
+            try:
+
+                await call.message.answer(
+                    "🏠 <b>HOME</b>",
+                    parse_mode="HTML"
+                )
+
+            except Exception:
+                pass
+
+    except Exception:
 
         logging.exception(
-            f"CHECK SUB ERROR: {e}"
+            "RENDER HOME AFTER JOIN ERROR"
         )
 
-        await call.answer(
-            "❌ SYSTEM ERROR",
-            show_alert=True
-        )
+        try:
+
+            await call.message.answer(
+                "🏠 <b>HOME</b>",
+                parse_mode="HTML"
+            )
+
+        except Exception:
+            pass
