@@ -13,7 +13,7 @@ from aiogram.types import (
 
 from database import get_pool
 
-ADMIN_ID = 123456789
+ADMIN_ID = 6665664367
 
 router = Router()
 
@@ -619,3 +619,260 @@ async def creator_cancel(
     )
 
     await call.answer()
+
+
+
+# =====================================
+# ADMIN APPROVE CREATOR
+# =====================================
+
+@router.callback_query(
+    F.data.startswith("creator_approve:")
+)
+async def creator_approve(
+    call: CallbackQuery
+):
+
+    # Hanya admin yang boleh memproses
+    if call.from_user.id != ADMIN_ID:
+
+        return await call.answer(
+            "❌ Kamu tidak memiliki akses.",
+            show_alert=True
+        )
+
+    try:
+        user_id = int(
+            call.data.split(":", 1)[1]
+        )
+    except (ValueError, IndexError):
+
+        return await call.answer(
+            "❌ Data user tidak valid.",
+            show_alert=True
+        )
+
+    pool = await get_pool()
+
+    user = await pool.fetchrow(
+        """
+        SELECT
+            user_id,
+            username,
+            fullname,
+            creator_status
+        FROM users
+        WHERE user_id = $1
+        """,
+        user_id
+    )
+
+    if not user:
+
+        return await call.answer(
+            "❌ User tidak ditemukan.",
+            show_alert=True
+        )
+
+    # Sudah diterima sebelumnya
+    if user["creator_status"] == "approved":
+
+        return await call.answer(
+            "✅ User ini sudah menjadi Kreator.",
+            show_alert=True
+        )
+
+    # =====================================
+    # APPROVE
+    # =====================================
+
+    await pool.execute(
+        """
+        UPDATE users
+        SET
+            is_creator = TRUE,
+            creator_status = 'approved',
+            creator_verified_at = NOW(),
+            updated_at = NOW()
+        WHERE user_id = $1
+        """,
+        user_id
+    )
+
+    # =====================================
+    # UPDATE PESAN ADMIN
+    # =====================================
+
+    try:
+
+        await call.message.edit_text(
+            call.message.text
+            + "\n\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "✅ <b>DITERIMA</b>\n"
+            f"👮 Admin : <code>{call.from_user.id}</code>",
+            parse_mode="HTML"
+        )
+
+    except Exception:
+        pass
+
+    # =====================================
+    # NOTIFIKASI USER
+    # =====================================
+
+    try:
+
+        await call.bot.send_message(
+            chat_id=user_id,
+            text=(
+                "🎉 <b>SELAMAT!</b>\n"
+                "━━━━━━━━━━━━━━━━━━\n\n"
+
+                "✅ Pengajuan Kreator kamu "
+                "telah <b>DISETUJUI</b>.\n\n"
+
+                "🎨 Sekarang kamu resmi menjadi "
+                "<b>Kreator</b>.\n\n"
+
+                "Kamu sekarang dapat:\n"
+                "📤 Upload file berbayar\n"
+                "💰 Mendapatkan penghasilan dari penjualan\n"
+                "📊 Mengelola file Marketplace\n\n"
+
+                "⚠️ Untuk file berbayar, tetap ikuti "
+                "aturan dan proses review yang berlaku."
+            ),
+            parse_mode="HTML"
+        )
+
+    except Exception:
+
+        logging.exception(
+            "Gagal mengirim notifikasi approval Kreator"
+        )
+
+    await call.answer(
+        "✅ User berhasil menjadi Kreator.",
+        show_alert=True
+    )
+
+
+# =====================================
+# ADMIN REJECT CREATOR
+# =====================================
+
+@router.callback_query(
+    F.data.startswith("creator_reject:")
+)
+async def creator_reject(
+    call: CallbackQuery
+):
+
+    # Hanya admin
+    if call.from_user.id != ADMIN_ID:
+
+        return await call.answer(
+            "❌ Kamu tidak memiliki akses.",
+            show_alert=True
+        )
+
+    try:
+        user_id = int(
+            call.data.split(":", 1)[1]
+        )
+    except (ValueError, IndexError):
+
+        return await call.answer(
+            "❌ Data user tidak valid.",
+            show_alert=True
+        )
+
+    pool = await get_pool()
+
+    user = await pool.fetchrow(
+        """
+        SELECT
+            user_id,
+            username,
+            fullname,
+            creator_status
+        FROM users
+        WHERE user_id = $1
+        """,
+        user_id
+    )
+
+    if not user:
+
+        return await call.answer(
+            "❌ User tidak ditemukan.",
+            show_alert=True
+        )
+
+    # =====================================
+    # REJECT
+    # =====================================
+
+    await pool.execute(
+        """
+        UPDATE users
+        SET
+            is_creator = FALSE,
+            creator_status = 'rejected',
+            updated_at = NOW()
+        WHERE user_id = $1
+        """,
+        user_id
+    )
+
+    # =====================================
+    # UPDATE PESAN ADMIN
+    # =====================================
+
+    try:
+
+        await call.message.edit_text(
+            call.message.text
+            + "\n\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "❌ <b>DITOLAK</b>\n"
+            f"👮 Admin : <code>{call.from_user.id}</code>",
+            parse_mode="HTML"
+        )
+
+    except Exception:
+        pass
+
+    # =====================================
+    # NOTIFIKASI USER
+    # =====================================
+
+    try:
+
+        await call.bot.send_message(
+            chat_id=user_id,
+            text=(
+                "⚠️ <b>PENGAJUAN KREATOR</b>\n"
+                "━━━━━━━━━━━━━━━━━━\n\n"
+
+                "❌ Pengajuan Kreator kamu "
+                "belum disetujui oleh admin.\n\n"
+
+                "Kamu dapat mengajukan kembali "
+                "setelah memperbaiki data atau "
+                "memenuhi persyaratan yang diperlukan."
+            ),
+            parse_mode="HTML"
+        )
+
+    except Exception:
+
+        logging.exception(
+            "Gagal mengirim notifikasi penolakan Kreator"
+        )
+
+    await call.answer(
+        "❌ Pengajuan ditolak.",
+        show_alert=True
+    )
