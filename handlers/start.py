@@ -16,6 +16,21 @@ router = Router()
 
 
 # =========================================================
+# CEK KREATOR TERVERIFIKASI
+# =========================================================
+
+def creator_verified(user) -> bool:
+
+    if not user:
+        return False
+
+    return (
+        bool(user["is_creator"])
+        and user["creator_status"] == "approved"
+    )
+
+
+# =========================================================
 # /START
 # =========================================================
 
@@ -24,6 +39,7 @@ async def start_cmd(
     message: Message,
     state: FSMContext
 ):
+
     await state.clear()
 
     user_id = message.from_user.id
@@ -34,7 +50,9 @@ async def start_cmd(
         else message.from_user.full_name
     )
 
-    loading = await message.answer("⚡ Loading...")
+    loading = await message.answer(
+        "⚡ Loading..."
+    )
 
     try:
 
@@ -52,11 +70,13 @@ async def start_cmd(
         )
 
         try:
+
             await loading.edit_text(
                 "❌ <b>SYSTEM ERROR</b>\n\n"
                 "Terjadi kesalahan saat membuka bot.",
                 parse_mode="HTML"
             )
+
         except Exception:
             pass
 
@@ -97,19 +117,24 @@ async def process_start(
     if not subscribed:
 
         try:
+
             bot_username = (
                 await bot.me()
             ).username
+
         except Exception:
+
             bot_username = None
 
         await loading.edit_text(
             "❌ <b>JOIN REQUIRED</b>\n\n"
             "Silakan join semua channel terlebih dahulu.",
+
             reply_markup=join_kb(
                 bot_username,
                 user_id
             ),
+
             parse_mode="HTML"
         )
 
@@ -138,13 +163,6 @@ async def process_start(
 
     # =====================================================
     # INSERT / UPDATE USER
-    #
-    # Menggunakan:
-    #   user_id
-    #   username
-    #   fullname
-    #
-    # Sesuai tabel users kamu.
     # =====================================================
 
     await pool.execute(
@@ -171,6 +189,7 @@ async def process_start(
             chat_id = EXCLUDED.chat_id,
             last_seen = NOW()
         """,
+
         user_id,
         username,
         message.from_user.full_name
@@ -295,6 +314,7 @@ async def process_start(
         code = args[1].strip()
 
         if not code:
+
             return await render_home_fast(
                 bot,
                 loading,
@@ -304,7 +324,9 @@ async def process_start(
 
         # Hapus loading
         try:
+
             await loading.delete()
+
         except Exception:
             pass
 
@@ -326,7 +348,9 @@ async def process_start(
             username,
             fullname,
             balance,
-            total_referral
+            total_referral,
+            is_creator,
+            creator_status
         FROM users
         WHERE user_id = $1
         """,
@@ -398,7 +422,9 @@ async def render_home_fast(
         """
         SELECT
             balance,
-            total_referral
+            total_referral,
+            is_creator,
+            creator_status
         FROM users
         WHERE user_id = $1
         """,
@@ -415,10 +441,41 @@ async def render_home_fast(
             user["total_referral"] or 0
         )
 
+        is_creator = creator_verified(
+            user
+        )
+
     else:
 
         balance = 0
         referral = 0
+        is_creator = False
+
+    # =====================================================
+    # STATUS KREATOR
+    # =====================================================
+
+    if is_creator:
+
+        creator_text = (
+            "🎨 Kreator : "
+            "<b>TERVERIFIKASI ✅</b>"
+        )
+
+        balance_text = (
+            f"<b>Rp {balance:,.0f}</b>"
+        )
+
+    else:
+
+        creator_text = (
+            "👤 Kreator : "
+            "<b>BELUM TERVERIFIKASI 🔒</b>"
+        )
+
+        balance_text = (
+            "<b>🔒 SALDO TERKUNCI</b>"
+        )
 
     # =====================================================
     # HOME TEXT
@@ -429,8 +486,9 @@ async def render_home_fast(
 
         f"ID : <code>{user_id}</code>\n"
 
-        f"Saldo : "
-        f"<b>Rp {balance:,.0f}</b>\n"
+        f"{creator_text}\n"
+
+        f"Saldo : {balance_text}\n"
 
         f"Referral : "
         f"<b>{referral}</b>\n"
