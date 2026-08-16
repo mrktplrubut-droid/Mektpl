@@ -966,6 +966,7 @@ async def pay_file(
                 paid_price,
                 payment_id,
                 status,
+                qr_string,
                 created_at
             )
             VALUES
@@ -976,6 +977,7 @@ async def pay_file(
                 $4,
                 $5,
                 'pending',
+                $6,
                 NOW()
             )
             RETURNING *
@@ -985,6 +987,7 @@ async def pay_file(
             file["owner_id"],
             price,
             invoice,
+            qr_string,
         )
 
     except Exception:
