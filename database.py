@@ -83,7 +83,10 @@ async def init_db():
     pool = await get_pool()
 
     async with pool.acquire() as conn:
+
+        # ========================
         # USERS
+        # ========================
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id BIGINT PRIMARY KEY,
@@ -95,15 +98,19 @@ async def init_db():
         );
         """)
 
-        # FIX kalau tabel lama belum ada kolom
         await conn.execute("""
-        ALTER TABLE users ADD COLUMN IF NOT EXISTS is_banned BOOLEAN DEFAULT FALSE;
-        """)
-        await conn.execute("""
-        ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE;
+        ALTER TABLE users
+        ADD COLUMN IF NOT EXISTS is_banned BOOLEAN DEFAULT FALSE;
         """)
 
+        await conn.execute("""
+        ALTER TABLE users
+        ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE;
+        """)
+
+        # ========================
         # SETTINGS
+        # ========================
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
@@ -117,7 +124,9 @@ async def init_db():
         ON CONFLICT (key) DO NOTHING;
         """)
 
+        # ========================
         # WALLETS
+        # ========================
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS wallets (
             user_id BIGINT PRIMARY KEY,
@@ -125,7 +134,9 @@ async def init_db():
         );
         """)
 
+        # ========================
         # CODES
+        # ========================
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS codes (
             id SERIAL PRIMARY KEY,
@@ -140,7 +151,9 @@ async def init_db():
         );
         """)
 
+        # ========================
         # MEDIAS
+        # ========================
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS medias (
             id SERIAL PRIMARY KEY,
@@ -151,7 +164,9 @@ async def init_db():
         );
         """)
 
+        # ========================
         # PAYMENTS
+        # ========================
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS payments (
             id SERIAL PRIMARY KEY,
@@ -167,7 +182,9 @@ async def init_db():
         );
         """)
 
+        # ========================
         # TRANSACTIONS
+        # ========================
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS transactions (
             id SERIAL PRIMARY KEY,
@@ -179,7 +196,9 @@ async def init_db():
         );
         """)
 
+        # ========================
         # WITHDRAW
+        # ========================
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS withdraws (
             id SERIAL PRIMARY KEY,
@@ -192,18 +211,107 @@ async def init_db():
         );
         """)
 
-        # FILE PURCHASE
+        # ========================
+        # FILE PURCHASES
+        # ========================
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS file_purchases (
             id SERIAL PRIMARY KEY,
             user_id BIGINT,
             code TEXT,
-            created_at TIMESTAMP DEFAULT NOW(),
-            UNIQUE(user_id, code)
+            file_code TEXT,
+            owner_id BIGINT,
+            paid_price BIGINT DEFAULT 0,
+            payment_id TEXT,
+            status TEXT DEFAULT 'pending',
+            qr_string TEXT,
+            qr_image TEXT,
+            payment_url TEXT,
+            expires_at TIMESTAMP,
+            qr_message_id BIGINT,
+            qr_chat_id BIGINT,
+            paid_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT NOW()
         );
         """)
 
+        # ========================
+        # AUTO FIX FILE_PURCHASES
+        # ========================
+
+        await conn.execute("""
+        ALTER TABLE file_purchases
+        ADD COLUMN IF NOT EXISTS user_id BIGINT;
+        """)
+
+        await conn.execute("""
+        ALTER TABLE file_purchases
+        ADD COLUMN IF NOT EXISTS code TEXT;
+        """)
+
+        await conn.execute("""
+        ALTER TABLE file_purchases
+        ADD COLUMN IF NOT EXISTS file_code TEXT;
+        """)
+
+        await conn.execute("""
+        ALTER TABLE file_purchases
+        ADD COLUMN IF NOT EXISTS owner_id BIGINT;
+        """)
+
+        await conn.execute("""
+        ALTER TABLE file_purchases
+        ADD COLUMN IF NOT EXISTS paid_price BIGINT DEFAULT 0;
+        """)
+
+        await conn.execute("""
+        ALTER TABLE file_purchases
+        ADD COLUMN IF NOT EXISTS payment_id TEXT;
+        """)
+
+        await conn.execute("""
+        ALTER TABLE file_purchases
+        ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending';
+        """)
+
+        await conn.execute("""
+        ALTER TABLE file_purchases
+        ADD COLUMN IF NOT EXISTS qr_string TEXT;
+        """)
+
+        await conn.execute("""
+        ALTER TABLE file_purchases
+        ADD COLUMN IF NOT EXISTS qr_image TEXT;
+        """)
+
+        await conn.execute("""
+        ALTER TABLE file_purchases
+        ADD COLUMN IF NOT EXISTS payment_url TEXT;
+        """)
+
+        await conn.execute("""
+        ALTER TABLE file_purchases
+        ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP;
+        """)
+
+        await conn.execute("""
+        ALTER TABLE file_purchases
+        ADD COLUMN IF NOT EXISTS qr_message_id BIGINT;
+        """)
+
+        await conn.execute("""
+        ALTER TABLE file_purchases
+        ADD COLUMN IF NOT EXISTS qr_chat_id BIGINT;
+        """)
+
+        await conn.execute("""
+        ALTER TABLE file_purchases
+        ADD COLUMN IF NOT EXISTS paid_at TIMESTAMP;
+        """)
+
+        # ========================
         # LOGS
+        # ========================
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS logs (
             id SERIAL PRIMARY KEY,
@@ -213,6 +321,24 @@ async def init_db():
             created_at TIMESTAMP DEFAULT NOW()
         );
         """)
+
+        # ========================
+        # DEBUG FILE_PURCHASES
+        # ========================
+        columns = await conn.fetch("""
+            SELECT column_name, data_type
+            FROM information_schema.columns
+            WHERE table_name = 'file_purchases'
+            ORDER BY ordinal_position;
+        """)
+
+        logging.info(
+            "📦 FILE_PURCHASES COLUMNS = %s",
+            [
+                f"{row['column_name']} ({row['data_type']})"
+                for row in columns
+            ]
+        )
 
         print("✅ Database initialized")
 
