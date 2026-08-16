@@ -9,12 +9,15 @@ from datetime import datetime
 
 import httpx
 
-from config import DOMPETX_API_KEY
+from config import (
+    DOMPETX_API_KEY,
+    DOMPETX_BASE_URL,
+)
 
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://api.dompetx.com"
+BASE_URL = DOMPETX_BASE_URL.rstrip("/")
 
 
 class DompetX:
@@ -25,11 +28,6 @@ class DompetX:
 
     @staticmethod
     def _parse_datetime(value):
-        """
-        Convert ISO datetime string dari DompetX
-        menjadi Python datetime agar kompatibel dengan
-        PostgreSQL TIMESTAMPTZ / asyncpg.
-        """
 
         if not value:
             return None
@@ -45,13 +43,11 @@ class DompetX:
             return None
 
         try:
-            # Contoh:
-            # 2026-08-15T13:32:18+07:00
             return datetime.fromisoformat(
                 value.replace("Z", "+00:00")
             )
 
-        except ValueError:
+        except (ValueError, TypeError):
             logger.exception(
                 "DOMPETX INVALID DATETIME: %s",
                 value,
@@ -59,41 +55,68 @@ class DompetX:
             return None
 
     # ==================================================
-    # HEADERS / SIGNATURE
+    # SIGNATURE
     # ==================================================
 
     @staticmethod
-    def _headers(body: dict | None = None):
-
-        timestamp = str(int(time.time()))
+    def _signature(
+        timestamp: str,
+        body: dict | None = None,
+    ):
 
         body_json = json.dumps(
             body or {},
             separators=(",", ":"),
         )
 
-        signature_payload = (
+        payload = (
             f"{timestamp}.{body_json}"
         )
 
-        signature = hmac.new(
+        return hmac.new(
             DOMPETX_API_KEY.encode(),
-            signature_payload.encode(),
+            payload.encode(),
             hashlib.sha256,
         ).hexdigest()
 
-        return {
+    # ==================================================
+    # HEADERS
+    # ==================================================
+
+    @staticmethod
+    def _headers(
+        body: dict | None = None,
+        *,
+        idempotency: bool = False,
+    ):
+
+        timestamp = str(
+            int(time.time())
+        )
+
+        headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
 
-            "X-DOMPAY-API-Key": DOMPETX_API_KEY,
-            "X-DOMPAY-Timestamp": timestamp,
-            "X-DOMPAY-Signature": signature,
+            "X-DOMPAY-API-Key":
+                DOMPETX_API_KEY,
 
-            "Idempotency-Key": str(
-                uuid.uuid4()
-            ),
+            "X-DOMPAY-Timestamp":
+                timestamp,
+
+            "X-DOMPAY-Signature":
+                DompetX._signature(
+                    timestamp,
+                    body,
+                ),
         }
+
+        if idempotency:
+            headers["Idempotency-Key"] = str(
+                uuid.uuid4()
+            )
+
+        return headers
 
     # ==================================================
     # CREATE PAYMENT
@@ -106,7 +129,14 @@ class DompetX:
         customer_name: str = "Customer",
     ):
 
-        amount = int(amount)
+        try:
+            amount = int(amount)
+        except (TypeError, ValueError):
+            logger.error(
+                "DOMPETX INVALID AMOUNT: %r",
+                amount,
+            )
+            return None
 
         if amount <= 0:
             logger.error(
@@ -126,10 +156,20 @@ class DompetX:
             "reference": reference,
             "settlementSpeed": "standard",
             "metadata": {
-                "order_name": description,
-                "customer_name": customer_name,
+                "order_name": str(
+                    description
+                ),
+                "customer_name": str(
+                    customer_name
+                ),
             },
         }
+
+        logger.info(
+            "DOMPETX CREATE | reference=%s | amount=%s",
+            reference,
+            amount,
+        )
 
         try:
 
@@ -140,11 +180,15 @@ class DompetX:
                 response = await client.post(
                     f"{BASE_URL}/v1/payments",
                     json=body,
-                    headers=DompetX._headers(body),
+                    headers=DompetX._headers(
+                        body,
+                        idempotency=True,
+                    ),
                 )
 
             logger.info(
-                "DOMPETX CREATE RESPONSE: %s",
+                "DOMPETX CREATE HTTP %s | %s",
+                response.status_code,
                 response.text,
             )
 
@@ -161,7 +205,7 @@ class DompetX:
             if not payment_id:
 
                 logger.error(
-                    "DOMPETX PAYMENT ID KOSONG: %s",
+                    "DOMPETX PAYMENT ID KOSONG | data=%s",
                     data,
                 )
 
@@ -224,19 +268,78 @@ class DompetX:
             ).lower()
 
             # ==================================================
-            # EXPIRES AT
+            # EXPIRES
             # ==================================================
 
-            expires_at = DompetX._parse_datetime(
-                data.get("expiresAt")
+            expires_at = (
+                DompetX._parse_datetime(
+                    data.get(
+                        "expiresAt"
+                    )
+                )
             )
+
+            # ==================================================
+            # AMOUNTS
+            # ==================================================
+
+            try:
+                response_amount = int(
+                    data.get(
+                        "amount",
+                        amount,
+                    )
+                )
+            except (
+                TypeError,
+                ValueError,
+            ):
+                response_amount = amount
+
+            try:
+                fee = int(
+                    data.get(
+                        "fee",
+                        0,
+                    ) or 0
+                )
+            except (
+                TypeError,
+                ValueError,
+            ):
+                fee = 0
+
+            try:
+                additional_fee = int(
+                    data.get(
+                        "additionalFee",
+                        0,
+                    ) or 0
+                )
+            except (
+                TypeError,
+                ValueError,
+            ):
+                additional_fee = 0
+
+            try:
+                total_amount = int(
+                    data.get(
+                        "totalAmount",
+                        response_amount,
+                    )
+                )
+            except (
+                TypeError,
+                ValueError,
+            ):
+                total_amount = response_amount
 
             # ==================================================
             # RETURN
             # ==================================================
 
             return {
-
                 "payment_id": payment_id,
 
                 "invoice_id": payment_id,
@@ -246,66 +349,53 @@ class DompetX:
                     reference,
                 ),
 
-                "provider_payment_id": data.get(
-                    "providerPaymentId"
-                ),
+                "provider_payment_id":
+                    data.get(
+                        "providerPaymentId"
+                    ),
 
                 "status": status,
 
-                "amount": int(
-                    data.get(
-                        "amount",
-                        amount,
-                    )
-                ),
+                "amount": response_amount,
 
-                "fee": int(
-                    data.get(
-                        "fee",
-                        0,
-                    )
-                ),
+                "fee": fee,
 
-                "additional_fee": int(
-                    data.get(
-                        "additionalFee",
-                        0,
-                    )
-                ),
+                "additional_fee":
+                    additional_fee,
 
-                "total_amount": int(
-                    data.get(
-                        "totalAmount",
-                        amount,
-                    )
-                ),
+                "total_amount":
+                    total_amount,
 
                 "currency": data.get(
                     "currency",
                     "IDR",
                 ),
 
-                # QRIS
-                "qr_string": qr_string,
+                "qr_string":
+                    qr_string,
 
-                # QR image resmi
-                "qr_image": qr_image,
+                "qr_image":
+                    qr_image,
 
-                # Checkout URL
-                "payment_url": payment_url,
+                "payment_url":
+                    payment_url,
 
-                # Python datetime
-                "expires_at": expires_at,
+                "expires_at":
+                    expires_at,
 
-                # Raw response
                 "raw": data,
             }
 
         except httpx.HTTPStatusError as e:
 
             logger.error(
-                "DOMPETX CREATE HTTP ERROR: %s | %s",
-                e,
+                "DOMPETX CREATE HTTP ERROR | "
+                "status=%s | response=%s",
+                (
+                    e.response.status_code
+                    if e.response
+                    else None
+                ),
                 (
                     e.response.text
                     if e.response
@@ -342,9 +432,14 @@ class DompetX:
     ):
 
         if not payment_id:
+            logger.error(
+                "DOMPETX CHECK: payment_id kosong"
+            )
             return None
 
-        body = {}
+        payment_id = str(
+            payment_id
+        ).strip()
 
         try:
 
@@ -353,12 +448,13 @@ class DompetX:
             ) as client:
 
                 response = await client.get(
-                    f"{BASE_URL}/v1/payments/check-status/{payment_id}",
-                    headers=DompetX._headers(body),
+                    f"{BASE_URL}/v1/payments/detail/{payment_id}",
+                    headers=DompetX._headers(),
                 )
 
             logger.info(
-                "DOMPETX CHECK RESPONSE: %s",
+                "DOMPETX CHECK HTTP %s | %s",
+                response.status_code,
                 response.text,
             )
 
@@ -374,7 +470,10 @@ class DompetX:
             ).lower()
 
             return {
-                "payment_id": payment_id,
+                "payment_id": data.get(
+                    "id",
+                    payment_id,
+                ),
 
                 "status": status,
 
@@ -382,17 +481,31 @@ class DompetX:
                     "amount"
                 ),
 
+                "currency": data.get(
+                    "currency",
+                    "IDR",
+                ),
+
                 "settle": data.get(
                     "settle"
                 ),
 
-                "is_cancellable": data.get(
-                    "isCancellable"
-                ),
+                "is_cancellable":
+                    data.get(
+                        "isCancellable"
+                    ),
 
-                "expires_at": DompetX._parse_datetime(
-                    data.get("expiresAt")
-                ),
+                "expires_at":
+                    DompetX._parse_datetime(
+                        data.get(
+                            "expiresAt"
+                        )
+                    ),
+
+                "qr_data":
+                    data.get(
+                        "qrData"
+                    ),
 
                 "raw": data,
             }
@@ -400,8 +513,13 @@ class DompetX:
         except httpx.HTTPStatusError as e:
 
             logger.error(
-                "DOMPETX CHECK HTTP ERROR: %s | %s",
-                e,
+                "DOMPETX CHECK HTTP ERROR | "
+                "status=%s | response=%s",
+                (
+                    e.response.status_code
+                    if e.response
+                    else None
+                ),
                 (
                     e.response.text
                     if e.response
@@ -438,7 +556,14 @@ class DompetX:
     ):
 
         if not payment_id:
+            logger.error(
+                "DOMPETX CANCEL: payment_id kosong"
+            )
             return None
+
+        payment_id = str(
+            payment_id
+        ).strip()
 
         body = {}
 
@@ -451,25 +576,32 @@ class DompetX:
                 response = await client.post(
                     f"{BASE_URL}/v1/payments/cancel/{payment_id}",
                     json=body,
-                    headers=DompetX._headers(body),
+                    headers=DompetX._headers(
+                        body,
+                        idempotency=True,
+                    ),
                 )
 
             logger.info(
-                "DOMPETX CANCEL RESPONSE: %s",
+                "DOMPETX CANCEL HTTP %s | %s",
+                response.status_code,
                 response.text,
             )
 
             response.raise_for_status()
 
-            data = response.json()
-
-            return data
+            return response.json()
 
         except httpx.HTTPStatusError as e:
 
             logger.error(
-                "DOMPETX CANCEL HTTP ERROR: %s | %s",
-                e,
+                "DOMPETX CANCEL HTTP ERROR | "
+                "status=%s | response=%s",
+                (
+                    e.response.status_code
+                    if e.response
+                    else None
+                ),
                 (
                     e.response.text
                     if e.response
