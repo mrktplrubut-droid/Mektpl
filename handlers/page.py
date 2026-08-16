@@ -23,8 +23,8 @@ router = Router()
 
 PAGE_SIZE = 10
 
-SAME_PAGE_COOLDOWN = 3600      # 1 jam
-CHANGE_PAGE_COOLDOWN = 30      # 30 detik
+SAME_PAGE_COOLDOWN = 3600
+CHANGE_PAGE_COOLDOWN = 30
 
 USER_LOCK = defaultdict(lambda: asyncio.Lock())
 
@@ -32,9 +32,11 @@ PAGE_CACHE = {}
 PAGE_CHANGE = {}
 NAV_CACHE = {}
 
+
 # =========================
 # UTIL
 # =========================
+
 async def clear_cache_loop():
 
     while True:
@@ -54,7 +56,8 @@ async def clear_cache_loop():
 
             for key in remove:
                 del cache[key]
-                
+
+
 def clean_file_id(fid):
     return fid.get("file_id") if isinstance(fid, dict) else fid
 
@@ -64,8 +67,29 @@ def normalize_type(ftype):
 
 
 # =========================
-# SEND PAGE (REUSABLE CORE)
+# FAVORITE + RATING BUTTON
 # =========================
+
+def build_reaction_buttons(code):
+
+    return [
+        [
+            InlineKeyboardButton(
+                text="❤️ Favorite",
+                callback_data=f"favorite:{code}"
+            ),
+            InlineKeyboardButton(
+                text="⭐ Rating",
+                callback_data=f"rating:{code}"
+            )
+        ]
+    ]
+
+
+# =========================
+# SEND PAGE
+# =========================
+
 async def send_page(bot, chat_id, user_id, code, page=1):
 
     pool = await get_pool()
@@ -84,12 +108,15 @@ async def send_page(bot, chat_id, user_id, code, page=1):
         print("FILE NOT FOUND")
         return False
 
+
     # =========================
-    # HITUNG VIEW (1x per user per 1 jam)
+    # HITUNG VIEW
     # =========================
+
     cache_key = (user_id, code)
 
     if page == 1:
+
         now = time.time()
 
         last = PAGE_CACHE.get(cache_key)
@@ -108,18 +135,28 @@ async def send_page(bot, chat_id, user_id, code, page=1):
             )
 
 
+    # =========================
+    # MEDIA
+    # =========================
+
     media = file["media"]
 
     if isinstance(media, str):
+
         try:
             media = json.loads(media)
+
         except Exception as e:
+
             print("MEDIA JSON ERROR", e)
+
             return False
 
 
     if not media:
+
         print("MEDIA EMPTY")
+
         return False
 
 
@@ -157,6 +194,10 @@ async def send_page(bot, chat_id, user_id, code, page=1):
         f"📊 TOTAL : {len(media)} FILE"
     )
 
+
+    # =========================
+    # BUILD ALBUM
+    # =========================
 
     album = []
 
@@ -213,10 +254,15 @@ async def send_page(bot, chat_id, user_id, code, page=1):
 
 
     if not album:
+
         print("ALBUM EMPTY")
+
         return False
 
 
+    # =========================
+    # SEND MEDIA
+    # =========================
 
     try:
 
@@ -225,7 +271,11 @@ async def send_page(bot, chat_id, user_id, code, page=1):
             item = chunk[0]
 
             file_id = item.get("file_id")
-            media_type = item.get("type", "document").lower()
+            media_type = item.get(
+                "type",
+                "document"
+            ).lower()
+
 
             if media_type == "photo":
 
@@ -236,6 +286,7 @@ async def send_page(bot, chat_id, user_id, code, page=1):
                     protect_content=protect
                 )
 
+
             elif media_type == "video":
 
                 await bot.send_video(
@@ -245,6 +296,7 @@ async def send_page(bot, chat_id, user_id, code, page=1):
                     protect_content=protect
                 )
 
+
             else:
 
                 await bot.send_document(
@@ -253,6 +305,7 @@ async def send_page(bot, chat_id, user_id, code, page=1):
                     caption=caption,
                     protect_content=protect
                 )
+
 
         else:
 
@@ -281,10 +334,12 @@ async def send_page(bot, chat_id, user_id, code, page=1):
         return False
 
 
+    # =========================
+    # NAVIGATION
+    # =========================
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-
             build_page_buttons(
                 code,
                 page,
@@ -296,7 +351,10 @@ async def send_page(bot, chat_id, user_id, code, page=1):
                     text="📤 OPEN ALL",
                     callback_data=f"all:{code}"
                 )
-            ]
+            ],
+
+            # ❤️ FAVORITE + ⭐ RATING
+            *build_reaction_buttons(code)
 
         ]
     )
@@ -306,7 +364,8 @@ async def send_page(bot, chat_id, user_id, code, page=1):
         chat_id,
         (
             f"📦 PAGE {page}/{total_page}\n"
-            f"✅ {len(album)}/{len(chunk)} Media"
+            f"✅ {len(album)}/{len(chunk)} Media\n\n"
+            "❤️ Simpan ke favorit atau ⭐ berikan rating"
         ),
         reply_markup=keyboard
     )
@@ -329,8 +388,9 @@ async def send_page(bot, chat_id, user_id, code, page=1):
 
 
 # =========================
-# BUTTON
+# PAGE BUTTONS
 # =========================
+
 def build_page_buttons(code: str, page: int, total: int):
 
     row = []
@@ -338,6 +398,7 @@ def build_page_buttons(code: str, page: int, total: int):
 
     # PREV
     if page > 1:
+
         row.append(
             InlineKeyboardButton(
                 text="⬅️ Prev",
@@ -350,11 +411,19 @@ def build_page_buttons(code: str, page: int, total: int):
     start = max(1, page - 2)
     end = min(total, page + 2)
 
+
     for i in range(start, end + 1):
 
-        emoji = "🔲" if i == page else (
-            "▫️" if i < page else "▪️"
+        emoji = (
+            "🔲"
+            if i == page
+            else (
+                "▫️"
+                if i < page
+                else "▪️"
+            )
         )
+
 
         row.append(
             InlineKeyboardButton(
@@ -388,8 +457,9 @@ def build_page_buttons(code: str, page: int, total: int):
 
 
 # =========================
-# HANDLER
+# PAGE HANDLER
 # =========================
+
 @router.callback_query(F.data.startswith("page:"))
 async def page_handler(call: CallbackQuery):
 
@@ -397,7 +467,9 @@ async def page_handler(call: CallbackQuery):
 
 
     try:
+
         await call.answer("📂 Loading...")
+
     except:
         pass
 
@@ -405,6 +477,7 @@ async def page_handler(call: CallbackQuery):
     try:
 
         _, code, page = call.data.split(":")
+
         page = int(page)
 
     except Exception:
@@ -415,9 +488,7 @@ async def page_handler(call: CallbackQuery):
         )
 
 
-
     async with USER_LOCK[user_id]:
-
 
         # =========================
         # HAPUS NAV LAMA
@@ -447,7 +518,6 @@ async def page_handler(call: CallbackQuery):
             )
 
 
-
         # =========================
         # SEND PAGE
         # =========================
@@ -464,16 +534,21 @@ async def page_handler(call: CallbackQuery):
         if not result:
 
             try:
+
                 await call.answer(
                     "❌ Gagal membuka halaman",
                     show_alert=True
                 )
+
             except:
                 pass
 
 
+# =========================
+# END PAGE
+# =========================
 
-@router.callback_query(F.data=="end_page")
+@router.callback_query(F.data == "end_page")
 async def end_page(call: CallbackQuery):
 
     try:
