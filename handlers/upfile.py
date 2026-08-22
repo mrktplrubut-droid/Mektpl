@@ -1522,7 +1522,6 @@ async def send_paid_review(
     caption = (
         "💰 <b>PAID FILE</b>\n"
         f"🤖 Bot : @{bot_username}\n"
-        f"👤 Creator : {creator_text}\n"
         f"📝 Judul : {title}\n"
         f"📦 Total Media : {media_count}\n"
         f"💵 Harga : <b>{rupiah(price)}</b>\n"
