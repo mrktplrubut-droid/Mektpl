@@ -95,6 +95,43 @@ async def process_start(
     bot = message.bot
 
     # =====================================================
+    # SAVE / UPDATE MEMBER PADA SETIAP /START
+    # =====================================================
+    # Member tetap dicatat walaupun force-sub belum terpenuhi.
+    # Ini membuat daftar member/admin selalu terisi.
+    pool = await get_pool()
+
+    existing_user = await pool.fetchval(
+        "SELECT 1 FROM users WHERE user_id=$1",
+        user_id
+    )
+    is_new_user = existing_user is None
+
+    await pool.execute(
+        """
+        INSERT INTO users(
+            user_id,
+            chat_id,
+            username,
+            full_name,
+            fullname,
+            last_seen
+        )
+        VALUES($1, $1, $2, $3, $3, NOW())
+        ON CONFLICT(user_id)
+        DO UPDATE SET
+            chat_id = EXCLUDED.chat_id,
+            username = EXCLUDED.username,
+            full_name = EXCLUDED.full_name,
+            fullname = EXCLUDED.fullname,
+            last_seen = NOW()
+        """,
+        user_id,
+        message.from_user.username,
+        message.from_user.full_name
+    )
+
+    # =====================================================
     # FORCE SUB
     # =====================================================
 
@@ -140,60 +177,7 @@ async def process_start(
 
         return
 
-    # =====================================================
-    # DATABASE
-    # =====================================================
-
-    pool = await get_pool()
-
-    # =====================================================
-    # CEK USER BARU
-    # =====================================================
-
-    existing_user = await pool.fetchval(
-        """
-        SELECT 1
-        FROM users
-        WHERE user_id = $1
-        """,
-        user_id
-    )
-
-    is_new_user = existing_user is None
-
-    # =====================================================
-    # INSERT / UPDATE USER
-    # =====================================================
-
-    await pool.execute(
-        """
-        INSERT INTO users(
-            user_id,
-            username,
-            fullname,
-            chat_id,
-            last_seen
-        )
-        VALUES(
-            $1,
-            $2,
-            $3,
-            $1,
-            NOW()
-        )
-
-        ON CONFLICT(user_id)
-        DO UPDATE SET
-            username = EXCLUDED.username,
-            fullname = EXCLUDED.fullname,
-            chat_id = EXCLUDED.chat_id,
-            last_seen = NOW()
-        """,
-
-        user_id,
-        username,
-        message.from_user.full_name
-    )
+    # User sudah disimpan di awal process_start.
 
     # =====================================================
     # AMBIL PARAMETER /START

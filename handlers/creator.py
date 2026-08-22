@@ -12,8 +12,9 @@ from aiogram.types import (
 )
 
 from database import get_pool
+from config import ADMIN_IDS
 
-ADMIN_ID = 6665664367
+ADMIN_ID = ADMIN_IDS[0] if ADMIN_IDS else 0
 
 router = Router()
 
@@ -634,7 +635,7 @@ async def creator_approve(
 ):
 
     # Hanya admin yang boleh memproses
-    if call.from_user.id != ADMIN_ID:
+    if call.from_user.id not in ADMIN_IDS:
 
         return await call.answer(
             "❌ Kamu tidak memiliki akses.",
@@ -770,7 +771,7 @@ async def creator_reject(
 ):
 
     # Hanya admin
-    if call.from_user.id != ADMIN_ID:
+    if call.from_user.id not in ADMIN_IDS:
 
         return await call.answer(
             "❌ Kamu tidak memiliki akses.",

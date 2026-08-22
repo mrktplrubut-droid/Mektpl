@@ -2,8 +2,7 @@ import json
 import logging
 import qrcode
 import secrets
-import asyncio
-from aiogram.exceptions import TelegramRetryAfter
+
 from io import BytesIO
 
 from aiogram import Router, F
@@ -115,70 +114,6 @@ def is_admin(user_id: int) -> bool:
     except Exception:
         return False
 
-async def safe_copy_message(
-    bot,
-    chat_id,
-    from_chat_id,
-    message_id,
-    max_retries=5,
-):
-    """
-    CopyMessage dengan retry otomatis ketika
-    Telegram terkena Flood Control.
-    """
-
-    for attempt in range(max_retries):
-
-        try:
-
-            result = await bot.copy_message(
-                chat_id=chat_id,
-                from_chat_id=from_chat_id,
-                message_id=message_id,
-            )
-
-            # Jeda antar media agar tidak terlalu cepat
-            await asyncio.sleep(0.5)
-
-            return result
-
-        except TelegramRetryAfter as e:
-
-            wait_time = max(
-                int(e.retry_after),
-                1,
-            )
-
-            logger.warning(
-                "TELEGRAM FLOOD CONTROL | "
-                "chat=%s | message=%s | "
-                "wait=%ss | attempt=%s/%s",
-                chat_id,
-                message_id,
-                wait_time,
-                attempt + 1,
-                max_retries,
-            )
-
-            await asyncio.sleep(
-                wait_time
-            )
-
-        except Exception:
-
-            logger.exception(
-                "COPY MESSAGE ERROR | "
-                "chat=%s | message=%s",
-                chat_id,
-                message_id,
-            )
-
-            raise
-
-    raise RuntimeError(
-        f"CopyMessage gagal setelah "
-        f"{max_retries} percobaan"
-    )
 
 # ============================================================
 # UPGRADE NOTIFICATION
@@ -2241,8 +2176,7 @@ async def send_page_media(
 
         try:
 
-            await safe_copy_message(
-                bot=call.bot,
+            await call.bot.copy_message(
                 chat_id=call.from_user.id,
                 from_chat_id=STORAGE_CHANNEL_ID,
                 message_id=item["message_id"],
@@ -2312,78 +2246,48 @@ async def send_all_media(
     )
 
     sent = 0
-    failed = 0
-
-    total = len(media_list)
 
     for index, item in enumerate(
         media_list,
         start=1,
     ):
 
-        message_id = item.get(
-            "message_id"
-        )
-
-        if not message_id:
-            failed += 1
-            continue
-
         try:
 
-            await safe_copy_message(
-                bot=call.bot,
+            await call.bot.copy_message(
                 chat_id=call.from_user.id,
                 from_chat_id=STORAGE_CHANNEL_ID,
-                message_id=message_id,
+                message_id=item["message_id"],
             )
 
             sent += 1
 
+            if index % 5 == 0:
+
+                try:
+
+                    await progress.edit_text(
+                        f"⏳ Mengirim "
+                        f"{index}/{len(media_list)}"
+                    )
+
+                except Exception:
+                    pass
+
         except Exception:
 
-            failed += 1
-
             logger.exception(
-                "SEND ALL ERROR | "
-                "index=%s | message_id=%s",
-                index,
-                message_id,
+                "SEND ALL ERROR"
             )
-
-        # Update progress setiap 5 file
-        if (
-            index % 5 == 0
-            or index == total
-        ):
-
-            try:
-
-                await progress.edit_text(
-                    (
-                        "⏳ <b>Mengirim file...</b>\n\n"
-                        f"📦 Progress: "
-                        f"{index}/{total}\n"
-                        f"✅ Berhasil: {sent}\n"
-                        f"❌ Gagal: {failed}"
-                    ),
-                    parse_mode="HTML",
-                )
-
-            except Exception:
-
-                pass
 
     try:
 
         await progress.edit_text(
             (
-                "✅ <b>Pengiriman selesai</b>\n\n"
-                f"📦 Total: {total}\n"
-                f"✅ Berhasil: {sent}\n"
-                f"❌ Gagal: {failed}"
-            ),
-            parse_mode="HTML",
+                "✅ Semua file selesai\n\n"
+                f"📦 Berhasil: "
+                f"{sent}/{len(media_list)}"
+            )
         )
 
     except Exception:

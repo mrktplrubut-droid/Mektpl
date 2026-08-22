@@ -249,13 +249,23 @@ async def open_file_by_code(
     price = file["price"] or 0
 
     # =====================================
-    # USER LEVEL
+    # USER LEVEL + CREATOR ACCESS
     # =====================================
 
     user_level = await get_user_status(
         pool,
         message.from_user.id
     )
+
+    creator_access = await pool.fetchval(
+        """
+        SELECT COALESCE(is_creator, FALSE)
+               AND COALESCE(creator_status, 'none') = 'approved'
+        FROM users
+        WHERE user_id = $1
+        """,
+        message.from_user.id
+    ) or False
 
     # =====================================
     # CEK PURCHASE
@@ -282,6 +292,7 @@ async def open_file_by_code(
     has_access = (
         owner
         or access
+        or creator_access
         or user_level in ("vip", "vvip")
     )
 
