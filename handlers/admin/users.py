@@ -33,8 +33,12 @@ class UnbanUserState(StatesGroup):
 
 class VvipState(StatesGroup):
     waiting_user = State()
-    waiting_type = State()   # ⬅️ TAMBAHAN
+    waiting_type = State()
     waiting_days = State()
+
+
+class CreatorState(StatesGroup):
+    waiting_user = State()
 
 
 # =========================
@@ -56,6 +60,7 @@ async def admin_users(call: CallbackQuery):
     kb.button(text="🚫 Ban User", callback_data="users_ban")
     kb.button(text="✅ Unban User", callback_data="users_unban")
     kb.button(text="👑 Set VVIP", callback_data="users_vvip")
+    kb.button(text="🎨 Jadikan Kreator", callback_data="users_creator")
     kb.button(text="⬅ Back", callback_data="admin_home")
 
     kb.adjust(2)
@@ -695,6 +700,105 @@ async def unban_user(message: Message, state: FSMContext):
         reply_markup=kb.as_markup()
     )
 
+    await state.clear()
+
+
+
+# =========================
+# SET CREATOR
+# =========================
+
+@router.callback_query(F.data == "users_creator")
+async def creator_start(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return await call.answer("❌ Tidak memiliki akses.", show_alert=True)
+
+    await state.clear()
+    await state.set_state(CreatorState.waiting_user)
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⬅ Kembali", callback_data="admin_users")
+
+    await call.message.edit_text(
+        "🎨 <b>JADIKAN KREATOR</b>\n\n"
+        "Kirim Telegram ID atau username member.\n\n"
+        "Kreator yang disetujui dapat membuka <b>semua file berbayar secara gratis</b>.",
+        parse_mode="HTML",
+        reply_markup=kb.as_markup()
+    )
+    await call.answer()
+
+
+@router.message(CreatorState.waiting_user)
+async def creator_set_user(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        return
+
+    key = (message.text or "").strip()
+    if not key:
+        return await message.answer("❌ Masukkan Telegram ID atau username.")
+
+    pool = await get_pool()
+
+    if key.isdigit():
+        user = await pool.fetchrow(
+            """
+            SELECT user_id, chat_id, username, full_name
+            FROM users
+            WHERE user_id=$1 OR chat_id=$1
+            LIMIT 1
+            """,
+            int(key)
+        )
+    else:
+        username = key.lstrip("@").lower()
+        user = await pool.fetchrow(
+            """
+            SELECT user_id, chat_id, username, full_name
+            FROM users
+            WHERE LOWER(username)=LOWER($1)
+            LIMIT 1
+            """,
+            username
+        )
+
+    if not user:
+        await state.clear()
+        return await message.answer("❌ Member tidak ditemukan. Pastikan member sudah menekan /start.")
+
+    target_id = user["user_id"] or user["chat_id"]
+
+    await pool.execute(
+        """
+        UPDATE users
+        SET
+            is_creator=TRUE,
+            creator_status='approved',
+            creator_verified_at=NOW(),
+            updated_at=NOW()
+        WHERE user_id=$1
+        """,
+        target_id
+    )
+
+    try:
+        await message.bot.send_message(
+            target_id,
+            "🎉 <b>Kamu sekarang resmi menjadi KREATOR!</b>\n\n"
+            "✅ Kamu dapat membuka semua kode/file berbayar tanpa membayar.\n"
+            "📤 Fitur kreator dan pengelolaan file tetap mengikuti aturan bot.",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+    await message.answer(
+        "✅ <b>Member berhasil dijadikan Kreator.</b>\n\n"
+        f"🆔 ID: <code>{target_id}</code>\n"
+        f"👤 Username: @{user['username'] or '-'}",
+        parse_mode="HTML"
+    )
     await state.clear()
 
 
