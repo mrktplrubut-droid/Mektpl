@@ -109,6 +109,61 @@ async def init_db():
         """)
 
         # ========================
+        # USER / CREATOR / MEMBERSHIP COMPATIBILITY
+        # ========================
+        # Keep existing deployments compatible with the bot code.
+        user_columns = [
+            ("chat_id", "BIGINT"),
+            ("full_name", "TEXT"),
+            ("fullname", "TEXT"),
+            ("last_seen", "TIMESTAMP"),
+            ("balance", "BIGINT DEFAULT 0"),
+            ("total_referral", "BIGINT DEFAULT 0"),
+            ("referral_count", "BIGINT DEFAULT 0"),
+            ("referred_by", "BIGINT"),
+            ("is_creator", "BOOLEAN DEFAULT FALSE"),
+            ("creator_status", "TEXT DEFAULT 'none'"),
+            ("creator_verified_at", "TIMESTAMP"),
+            ("phone", "TEXT"),
+            ("creator_telegram", "TEXT"),
+            ("updated_at", "TIMESTAMP DEFAULT NOW()"),
+            ("vip", "BOOLEAN DEFAULT FALSE"),
+            ("is_vip", "BOOLEAN DEFAULT FALSE"),
+            ("vvip", "BOOLEAN DEFAULT FALSE"),
+            ("is_vvip", "BOOLEAN DEFAULT FALSE"),
+            ("plan", "TEXT DEFAULT 'free'"),
+            ("vip_until", "TIMESTAMP"),
+            ("vip_expired", "TIMESTAMP"),
+            ("vvip_until", "TIMESTAMP"),
+            ("vvip_expired", "TIMESTAMP"),
+            ("expired_at", "TIMESTAMP")
+        ]
+
+        for column_name, column_type in user_columns:
+            await conn.execute(
+                f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {column_name} {column_type};"
+            )
+
+        # Synchronize the two common Telegram/name aliases when both exist.
+        await conn.execute("""
+            UPDATE users
+            SET chat_id = user_id
+            WHERE chat_id IS NULL;
+        """)
+
+        await conn.execute("""
+            UPDATE users
+            SET full_name = COALESCE(full_name, fullname)
+            WHERE full_name IS NULL AND fullname IS NOT NULL;
+        """)
+
+        await conn.execute("""
+            UPDATE users
+            SET fullname = COALESCE(fullname, full_name)
+            WHERE fullname IS NULL AND full_name IS NOT NULL;
+        """)
+
+        # ========================
         # SETTINGS
         # ========================
         await conn.execute("""
