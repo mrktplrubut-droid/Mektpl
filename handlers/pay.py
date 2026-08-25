@@ -539,8 +539,8 @@ async def finish_payment(
             await execute(
                 """
                 UPDATE files
-                SET buy_count =
-                    COALESCE(buy_count, 0) + 1
+                SET buy_count = COALESCE(buy_count, 0) + 1,
+                    sold = COALESCE(sold, 0) + 1
                 WHERE code=$1
                 """,
                 file["code"],

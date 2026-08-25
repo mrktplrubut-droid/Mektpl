@@ -33,7 +33,9 @@ async def market_detail(call: CallbackQuery):
             COALESCE(views, 0) AS views,
             COALESCE(rating, 0) AS rating,
             COALESCE(review_count, 0) AS review_count,
-            COALESCE(favorite_count, 0) AS favorite_count
+            COALESCE(favorite_count, 0) AS favorite_count,
+            COALESCE(likes, 0) AS likes,
+            COALESCE(dislikes, 0) AS dislikes
 
         FROM files
         WHERE code = $1
@@ -48,16 +50,29 @@ async def market_detail(call: CallbackQuery):
             show_alert=True
         )
 
-    # Tambah view
-    await execute(
+    # Satu view unik per user/file. Semua tersimpan di database.
+    viewed = await fetchrow(
         """
-        UPDATE files
-        SET views = COALESCE(views, 0) + 1
-        WHERE code = $1
+        INSERT INTO file_views(user_id, file_code)
+        VALUES($1, $2)
+        ON CONFLICT (user_id, file_code) DO NOTHING
+        RETURNING user_id
         """,
+        call.from_user.id,
         code
     )
+    if viewed:
+        await execute(
+            """
+            UPDATE files
+            SET views = COALESCE(views, 0) + 1,
+                view_count = COALESCE(view_count, 0) + 1
+            WHERE code = $1
+            """,
+            code
+        )
 
+    current_views = int(file["views"] or 0) + (1 if viewed else 0)
     price = file["price"] or 0
 
     text = (
@@ -72,7 +87,8 @@ async def market_detail(call: CallbackQuery):
         f"👤 <b>Seller :</b> <code>{file['owner_id']}</code>\n\n"
 
         f"🔥 <b>Terjual :</b> {file['sold']}\n"
-        f"👁 <b>Dilihat :</b> {file['views'] + 1}\n"
+        f"👁 <b>Dilihat :</b> {current_views}\n"
+        f"❤️ <b>Suka :</b> {file['likes']}  |  👎 <b>Tidak suka :</b> {file['dislikes']}\n"
         f"❤️ <b>Favorit :</b> {file['favorite_count']}\n"
         f"⭐ <b>Rating :</b> {float(file['rating']):.1f} ({file['review_count']} Review)\n\n"
 
@@ -96,6 +112,17 @@ async def market_detail(call: CallbackQuery):
                 callback_data=f"page:{code}:1"
             )
         ])
+
+    keyboard.append([
+        InlineKeyboardButton(
+            text=f"👍 {file['likes']}",
+            callback_data=f"like:{code}"
+        ),
+        InlineKeyboardButton(
+            text=f"👎 {file['dislikes']}",
+            callback_data=f"dislike:{code}"
+        )
+    ])
 
     keyboard.append([
         InlineKeyboardButton(

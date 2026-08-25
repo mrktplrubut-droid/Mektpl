@@ -63,16 +63,6 @@ async def open_all(call: CallbackQuery):
             pass
         return
 
-    # ✅ Tambah jumlah view
-    await pool.execute(
-        """
-        UPDATE files
-        SET views = COALESCE(views, 0) + 1
-        WHERE code = $1
-        """,
-        code
-    )
-
     # Ambil status user
     user_level = await get_user_status(
         pool,

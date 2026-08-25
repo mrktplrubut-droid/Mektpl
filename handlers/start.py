@@ -250,17 +250,17 @@ async def process_start(
                                 user_id
                             )
 
-                            # Tambahkan bonus referral
+                            # Tambahkan referral + bonus secara atomic.
+                            # referral_count adalah counter utama yang dipakai
+                            # Account, Reward, dan Creator.
                             await pool.execute(
                                 """
                                 UPDATE users
                                 SET
-                                    total_referral =
-                                        COALESCE(total_referral, 0) + 1,
-
-                                    balance =
-                                        COALESCE(balance, 0) + 200
-
+                                    referral_count = COALESCE(referral_count, 0) + 1,
+                                    total_referral = COALESCE(total_referral, 0) + 1,
+                                    balance = COALESCE(balance, 0) + 200,
+                                    updated_at = NOW()
                                 WHERE user_id = $1
                                 """,
                                 ref_id

@@ -53,6 +53,8 @@ async def marketplace_menu(call: CallbackQuery):
             COALESCE(sold, 0) AS sold,
             COALESCE(views, 0) AS views,
             COALESCE(favorite_count, 0) AS favorite_count,
+            COALESCE(likes, 0) AS likes,
+            COALESCE(dislikes, 0) AS dislikes,
             COALESCE(rating, 0) AS rating,
             COALESCE(review_count, 0) AS review_count,
 
@@ -141,6 +143,8 @@ async def marketplace_menu(call: CallbackQuery):
             views = f["views"] or 0
 
             favorites = f["favorite_count"] or 0
+            likes = f["likes"] or 0
+            dislikes = f["dislikes"] or 0
 
             sold = f["sold"] or 0
 
@@ -178,7 +182,9 @@ async def marketplace_menu(call: CallbackQuery):
                 f"💰 {price_text}\n"
                 f"📁 {media_count} Media\n"
                 f"👁 {views:,} "
-                f"| ❤️ {favorites:,} "
+                f"| 👍 {likes:,} "
+                f"| 👎 {dislikes:,}\n"
+                f"❤️ {favorites:,} "
                 f"| 🔥 {sold:,}\n"
                 f"⭐ {rating:.1f} "
                 f"({review_count} ulasan)\n"

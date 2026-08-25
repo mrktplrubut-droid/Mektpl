@@ -310,15 +310,17 @@ async def open_file_by_code(
     # =====================================
 
     if not is_paid or has_access:
-
-        await pool.execute(
-            """
-            UPDATE files
-            SET views = COALESCE(views, 0) + 1
-            WHERE code = $1
-            """,
-            file["code"]
+        viewed = await pool.fetchrow(
+            """INSERT INTO file_views(user_id,file_code) VALUES($1,$2)
+               ON CONFLICT(user_id,file_code) DO NOTHING RETURNING user_id""",
+            message.from_user.id, file["code"]
         )
+        if viewed:
+            await pool.execute(
+                """UPDATE files SET views=COALESCE(views,0)+1,
+                   view_count=COALESCE(view_count,0)+1 WHERE code=$1""",
+                file["code"]
+            )
 
     await state.clear()
 

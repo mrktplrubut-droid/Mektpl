@@ -27,6 +27,62 @@ class CreatorApplicationState(StatesGroup):
     confirming = State()
 
 
+@router.callback_query(F.data == "creator")
+async def creator_info(call: CallbackQuery):
+    pool = await get_pool()
+    user = await pool.fetchrow(
+        "SELECT referral_count,is_creator,creator_status FROM users WHERE user_id=$1",
+        call.from_user.id
+    )
+    if not user:
+        return await call.answer("❌ Data akun tidak ditemukan.", show_alert=True)
+
+    count = int(user["referral_count"] or 0)
+    approved = bool(user["is_creator"]) and user["creator_status"] == "approved"
+    if approved:
+        text = (
+            "🎨 <b>PROGRAM KREATOR</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+            "✅ Status: <b>Kreator Terverifikasi</b>\n\n"
+            "🚀 <b>Manfaat:</b>\n"
+            "• 📂 Bisa membuka code PAID tanpa membayar\n"
+            "• 💰 Bisa upload code dan menentukan harga sendiri\n"
+            "• 🛒 Mendapat penghasilan saat code dibeli\n"
+            "• 💳 Pendapatan masuk ke saldo dan dapat di-WD sesuai ketentuan\n"
+            "• 📊 Penjualan, terlihat, suka, tidak suka, dan rating tercatat real di database\n"
+            "• 📤 Bisa membagikan code untuk mendapatkan pembeli\n\n"
+            "💡 <b>Tips:</b> Buat preview/review yang jelas agar lebih mudah dipercaya pembeli."
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📤 Upload Code", callback_data="upfile")],
+            [InlineKeyboardButton(text="🛍 Marketplace", callback_data="marketplace")],
+            [InlineKeyboardButton(text="⬅️ Home", callback_data="home")]
+        ])
+    else:
+        remaining = max(0, CREATOR_REQUIRED_REFERRAL - count)
+        text = (
+            "🎨 <b>PROGRAM KREATOR</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+            "Jadilah Kreator dan dapatkan penghasilan dari code yang kamu bagikan.\n\n"
+            "✨ <b>Manfaat Kreator:</b>\n"
+            "• 📂 Bisa membuka code PAID tanpa bayar setelah terverifikasi\n"
+            "• 💰 Bisa upload code PAID dan memasang harga sendiri\n"
+            "• 🛒 Saldo bertambah ketika code berhasil dibeli\n"
+            "• 💳 Saldo dapat di-WD sesuai ketentuan\n"
+            "• 📈 Statistik terlihat, terjual, suka, tidak suka, favorit, dan rating tersimpan real\n"
+            "• 📤 Bisa share code untuk mencari pembeli\n\n"
+            f"👥 Referral: <b>{count}/{CREATOR_REQUIRED_REFERRAL}</b>\n"
+            f"📌 Kekurangan: <b>{remaining}</b> referral\n\n"
+            "Setelah memenuhi 100 referral, ajukan verifikasi Kreator."
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🎨 Ajukan Kreator", callback_data="creator_apply")],
+            [InlineKeyboardButton(text="⬅️ Home", callback_data="home")]
+        ])
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await call.answer()
+
+
 # =====================================
 # START CREATOR APPLICATION
 # =====================================

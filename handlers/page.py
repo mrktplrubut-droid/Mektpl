@@ -110,28 +110,44 @@ async def send_page(bot, chat_id, user_id, code, page=1):
 
 
     # =========================
-    # HITUNG VIEW
+    # AKSES + VIEW REAL DATABASE
     # =========================
-
-    cache_key = (user_id, code)
+    creator_access = await pool.fetchval(
+        """
+        SELECT COALESCE(is_creator, FALSE)
+               AND COALESCE(creator_status, 'none') = 'approved'
+        FROM users WHERE user_id=$1
+        """, user_id
+    ) or False
+    owner_access = (file["owner_id"] == user_id)
+    purchase_access = await pool.fetchval(
+        """SELECT EXISTS(SELECT 1 FROM file_purchases
+           WHERE user_id=$1 AND file_code=$2 AND status='paid')""",
+        user_id, code
+    ) or False
+    if bool(file["is_paid"]) and not (creator_access or owner_access or purchase_access):
+        await bot.send_message(
+            chat_id,
+            "🔒 <b>FILE BERBAYAR</b>\n\n"
+            f"💰 Harga: <b>Rp {int(file['price'] or 0):,}</b>\n\n"
+            "Silakan beli file untuk membukanya.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="💳 Beli", callback_data=f"pay:{code}")
+            ]])
+        )
+        return False
 
     if page == 1:
-
-        now = time.time()
-
-        last = PAGE_CACHE.get(cache_key)
-
-        if last is None or now - last[0] >= SAME_PAGE_COOLDOWN:
-
-            PAGE_CACHE[cache_key] = (now, page)
-
+        viewed = await pool.fetchrow(
+            """INSERT INTO file_views(user_id,file_code) VALUES($1,$2)
+               ON CONFLICT(user_id,file_code) DO NOTHING RETURNING user_id""",
+            user_id, code
+        )
+        if viewed:
             await pool.execute(
-                """
-                UPDATE files
-                SET views = COALESCE(views, 0) + 1
-                WHERE code = $1
-                """,
-                code
+                """UPDATE files SET views=COALESCE(views,0)+1,
+                   view_count=COALESCE(view_count,0)+1 WHERE code=$1""", code
             )
 
 
