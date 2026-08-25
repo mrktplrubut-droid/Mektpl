@@ -64,6 +64,7 @@ from handlers.new_code import router as new_code_router
 from handlers.category_code import router as category_router
 from handlers.market_rating import router as market_rating_router
 from handlers.market_favorite import router as market_favorite_router
+from handlers.market_reaction import router as market_reaction_router
 
 from handlers.channel import router as channel_router
 from handlers.account import router as account_router
@@ -154,6 +155,7 @@ dp.include_router(marketplace_router)
 dp.include_router(market_detail_router)
 dp.include_router(market_rating_router)
 dp.include_router(market_favorite_router)
+dp.include_router(market_reaction_router)
 
 # NOTIFICATION
 dp.include_router(notify_router)

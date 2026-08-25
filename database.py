@@ -118,8 +118,12 @@ async def init_db():
             ("fullname", "TEXT"),
             ("last_seen", "TIMESTAMP"),
             ("balance", "BIGINT DEFAULT 0"),
+            ("total_earn", "BIGINT DEFAULT 0"),
             ("total_referral", "BIGINT DEFAULT 0"),
             ("referral_count", "BIGINT DEFAULT 0"),
+            ("ref_10_claimed", "BOOLEAN DEFAULT FALSE"),
+            ("ref_20_claimed", "BOOLEAN DEFAULT FALSE"),
+            ("ref_50_claimed", "BOOLEAN DEFAULT FALSE"),
             ("referred_by", "BIGINT"),
             ("is_creator", "BOOLEAN DEFAULT FALSE"),
             ("creator_status", "TEXT DEFAULT 'none'"),
@@ -362,6 +366,72 @@ async def init_db():
         await conn.execute("""
         ALTER TABLE file_purchases
         ADD COLUMN IF NOT EXISTS paid_at TIMESTAMP;
+        """)
+
+        # ========================
+        # MARKETPLACE REAL-TIME COUNTERS / REACTIONS
+        # ========================
+        file_columns = [
+            ("views", "BIGINT DEFAULT 0"),
+            ("view_count", "BIGINT DEFAULT 0"),
+            ("sold", "BIGINT DEFAULT 0"),
+            ("buy_count", "BIGINT DEFAULT 0"),
+            ("favorite_count", "BIGINT DEFAULT 0"),
+            ("likes", "BIGINT DEFAULT 0"),
+            ("dislikes", "BIGINT DEFAULT 0"),
+            ("rating", "NUMERIC(3,1) DEFAULT 0"),
+            ("review_count", "BIGINT DEFAULT 0"),
+            ("seller_id", "BIGINT"),
+            ("owner_id", "BIGINT"),
+        ]
+
+        for column_name, column_type in file_columns:
+            await conn.execute(
+                f"ALTER TABLE files ADD COLUMN IF NOT EXISTS {column_name} {column_type};"
+            )
+
+        await conn.execute("""
+            UPDATE files
+            SET views = GREATEST(COALESCE(views, 0), COALESCE(view_count, 0)),
+                sold = GREATEST(COALESCE(sold, 0), COALESCE(buy_count, 0))
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS file_views (
+            user_id BIGINT NOT NULL,
+            file_code TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT NOW(),
+            PRIMARY KEY (user_id, file_code)
+        );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS file_reactions (
+            user_id BIGINT NOT NULL,
+            file_code TEXT NOT NULL,
+            reaction TEXT NOT NULL CHECK (reaction IN ('like','dislike')),
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW(),
+            PRIMARY KEY (user_id, file_code)
+        );
+        """)
+
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_file_views_code
+            ON file_views(file_code);
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_file_reactions_code
+            ON file_reactions(file_code);
+        """)
+
+        # Repair old referral counters: referral_count is the canonical counter.
+        await conn.execute("""
+            UPDATE users
+            SET referral_count = GREATEST(
+                COALESCE(referral_count, 0),
+                COALESCE(total_referral, 0)
+            );
         """)
 
         # ========================
