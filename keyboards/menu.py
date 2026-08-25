@@ -29,6 +29,10 @@ def home_kb(user_id: int):
             ],
             [
                 InlineKeyboardButton(
+                    text="🎨 Kreator",
+                    callback_data="creator"
+                ),
+                InlineKeyboardButton(
                     text="📂 Menu Lainnya",
                     callback_data="menu_lainnya"
                 ),
