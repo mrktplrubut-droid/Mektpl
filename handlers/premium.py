@@ -9,6 +9,8 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardBut
 from database import get_pool
 from utils.dompetx import DompetX
 from config_vip import VIP_PACKAGES
+from config import PAYMENT_CHANNEL_ID
+from bot import bot
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -28,6 +30,46 @@ def db_naive_utc(dt):
     if dt.tzinfo is not None:
         return dt.astimezone(timezone.utc).replace(tzinfo=None)
     return dt
+
+
+async def add_user_notification(pool, user_id, title, message, ntype="premium"):
+    await pool.execute(
+        """INSERT INTO user_notifications(user_id, type, title, message)
+           VALUES($1,$2,$3,$4)""",
+        user_id, ntype, title, message
+    )
+
+
+async def post_payment_channel(kind, user_id, package, payment_id, amount, status="pending"):
+    try:
+        status_map = {
+            "pending": "⏳ MENUNGGU PEMBAYARAN",
+            "paid": "✅ PEMBAYARAN BERHASIL",
+            "cancel": "❌ PEMBAYARAN DIBATALKAN",
+            "expired": "⌛ PEMBAYARAN KEDALUWARSA",
+        }
+        await bot.send_message(
+            PAYMENT_CHANNEL_ID,
+            (
+                f"💳 <b>{status_map.get(status, status.upper())}</b>\n\n"
+                f"🏷️ Jenis: <b>{kind}</b>\n"
+                f"📦 Paket: <b>{package['name']}</b>\n"
+                f"💰 Nominal: <b>{rupiah(amount)}</b>\n"
+                f"👤 User ID: <code>{user_id}</code>\n"
+                f"🧾 Payment ID: <code>{payment_id}</code>"
+            ),
+            parse_mode="HTML"
+        )
+    except Exception:
+        logger.exception("PREMIUM PAYMENT CHANNEL NOTIFY FAILED")
+
+
+async def notify_user_and_channel(pool, user_id, package, payment_id, amount, status, title, message):
+    try:
+        await add_user_notification(pool, user_id, title, message)
+    except Exception:
+        logger.exception("PREMIUM USER NOTIFICATION DB FAILED")
+    await post_payment_channel(package['type'], user_id, package, payment_id, amount, status)
 
 
 def package_keyboard():
@@ -122,6 +164,12 @@ async def premium_buy(call: CallbackQuery):
            VALUES ($1,$2,$3,$4,'pending',$5,$6,$7,NOW())""",
         uid, key, package["price"], payment_id, qr_string,
         payment.get("payment_url"), db_naive_utc(payment.get("expires_at"))
+    )
+
+    await notify_user_and_channel(
+        pool, uid, package, payment_id, package["price"], "pending",
+        "Pembayaran VIP dibuat",
+        f"{package['name']} senilai {rupiah(package['price'])} dibuat. Silakan selesaikan pembayaran melalui QR DompetX."
     )
 
     if package["type"] == "vip_clock":
@@ -257,6 +305,11 @@ async def premium_check(call: CallbackQuery):
             msg = await activate_package(
                 pool, call.from_user.id, payment["package_id"], payment_id
             )
+            await notify_user_and_channel(
+                pool, call.from_user.id, VIP_PACKAGES[payment["package_id"]], payment_id,
+                payment["amount"], "paid",
+                "VIP / Kreator aktif", msg.replace("<b>", "").replace("</b>", "")
+            )
             try:
                 await call.message.edit_caption(
                     caption=f"✅ <b>PEMBAYARAN BERHASIL</b>\n\n{msg}\n\nID: <code>{payment_id}</code>",
@@ -281,6 +334,12 @@ async def premium_check(call: CallbackQuery):
         await pool.execute(
             "UPDATE premium_payments SET status='cancel' WHERE payment_id=$1 AND status='pending'",
             payment_id
+        )
+        await notify_user_and_channel(
+            pool, call.from_user.id, VIP_PACKAGES[payment["package_id"]], payment_id,
+            payment["amount"], "cancel",
+            "Pembayaran gagal / kedaluwarsa",
+            f"Pembayaran {VIP_PACKAGES[payment['package_id']]['name']} belum berhasil dan tidak mengaktifkan akses premium."
         )
         return await call.answer(
             "❌ Pembayaran batal/kedaluwarsa.", show_alert=True
@@ -310,6 +369,12 @@ async def premium_cancel(call: CallbackQuery):
         await pool.execute(
             "UPDATE premium_payments SET status='cancel' WHERE payment_id=$1 AND status='pending'",
             payment_id
+        )
+        await notify_user_and_channel(
+            pool, call.from_user.id, VIP_PACKAGES[payment["package_id"]], payment_id,
+            payment["amount"], "cancel",
+            "Pembayaran dibatalkan",
+            f"Pembayaran {VIP_PACKAGES[payment['package_id']]['name']} dibatalkan. Tidak ada akses premium yang diberikan."
         )
 
     await call.answer("❌ Pembayaran dibatalkan.")
