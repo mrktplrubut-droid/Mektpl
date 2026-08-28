@@ -69,6 +69,28 @@ async def open_all(call: CallbackQuery):
         call.from_user.id
     )
 
+    # VIP/Kreator harus tetap dicek di server saat Open All.
+    # Ini mencegah bypass melalui callback langsung.
+    from utils.user import has_premium_access
+    paid = bool(file.get("is_paid"))
+    if paid:
+        purchased = await pool.fetchval(
+            """SELECT EXISTS(SELECT 1 FROM file_purchases
+               WHERE user_id=$1 AND file_code=$2 AND status='paid')""",
+            call.from_user.id, code
+        )
+        owner = call.from_user.id == file.get("owner_id")
+        creator = await pool.fetchval(
+            """SELECT COALESCE(is_creator,FALSE) AND COALESCE(creator_status,'none')='approved'
+               FROM users WHERE user_id=$1""", call.from_user.id
+        ) or False
+        if not (owner or purchased or creator):
+            ok, reason = await has_premium_access(pool, call.from_user.id, code, consume=True)
+            if not ok:
+                if reason == "limit":
+                    return await call.answer("⏱️ VIP jam sudah mencapai 3 code.", show_alert=True)
+                return await call.answer("🔒 Code ini perlu dibayar atau gunakan VIP/Kreator aktif.", show_alert=True)
+
     # Kirim semua media
     await send_all(
         bot=call.bot,
