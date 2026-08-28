@@ -272,6 +272,25 @@ async def init_db():
         """)
 
         # ========================
+        # USER NOTIFICATIONS
+        # ========================
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_notifications (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            type TEXT NOT NULL DEFAULT 'info',
+            title TEXT NOT NULL,
+            message TEXT NOT NULL,
+            is_read BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT NOW()
+        );
+        """)
+        await conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_user_notifications_user
+        ON user_notifications(user_id, is_read, created_at DESC);
+        """)
+
+        # ========================
         # TRANSACTIONS
         # ========================
         await conn.execute("""
