@@ -242,6 +242,36 @@ async def init_db():
         """)
 
         # ========================
+        # VIP / KREATOR PAYMENTS
+        # ========================
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS premium_payments (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            package_id TEXT NOT NULL,
+            amount BIGINT NOT NULL,
+            payment_id TEXT UNIQUE NOT NULL,
+            status TEXT DEFAULT 'pending',
+            qr_string TEXT,
+            payment_url TEXT,
+            expires_at TIMESTAMP,
+            access_until TIMESTAMP,
+            code_limit INT DEFAULT 0,
+            paid_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT NOW()
+        );
+        """)
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS premium_code_usage (
+            user_id BIGINT NOT NULL,
+            code TEXT NOT NULL,
+            payment_id TEXT,
+            created_at TIMESTAMP DEFAULT NOW(),
+            PRIMARY KEY (user_id, code)
+        );
+        """)
+
+        # ========================
         # TRANSACTIONS
         # ========================
         await conn.execute("""

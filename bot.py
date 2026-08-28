@@ -91,6 +91,7 @@ from handlers.withdraw import (
 )
 
 from handlers.creator import router as creator_router
+from handlers.premium import router as premium_router
 
 from handlers.admin import router as admin_router
 from handlers.notify import router as notify_router
@@ -144,6 +145,7 @@ dp.include_router(withdraw_confirm_router)
 dp.include_router(admin_router)
 
 dp.include_router(creator_router)
+dp.include_router(premium_router)
 
 dp.include_router(favorite_router)
 dp.include_router(rating_router)
