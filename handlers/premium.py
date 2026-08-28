@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 
 import qrcode
@@ -19,6 +19,15 @@ FAILED = {"cancelled", "canceled", "expired", "failed", "rejected", "void"}
 
 def rupiah(n):
     return f"Rp {int(n):,}".replace(",", ".")
+
+
+def db_naive_utc(dt):
+    """Convert DompetX aware datetime to naive UTC for legacy TIMESTAMP columns."""
+    if not dt:
+        return None
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
 
 
 def package_keyboard():
@@ -112,7 +121,7 @@ async def premium_buy(call: CallbackQuery):
             payment_url, expires_at, created_at)
            VALUES ($1,$2,$3,$4,'pending',$5,$6,$7,NOW())""",
         uid, key, package["price"], payment_id, qr_string,
-        payment.get("payment_url"), payment.get("expires_at")
+        payment.get("payment_url"), db_naive_utc(payment.get("expires_at"))
     )
 
     if package["type"] == "vip_clock":
