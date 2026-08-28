@@ -382,3 +382,73 @@ async def use_quota(user_id:int):
 
 
     return False
+
+
+# =========================
+# PREMIUM ACCESS (VIP JAM / HARI / KREATOR)
+# =========================
+async def has_premium_access(pool, user_id: int, code: str, consume: bool = True):
+    """Server-side premium gate. VIP jam: max 3 unique paid codes.
+    VIP hari/Kreator: unlimited while active.
+    """
+    user = await pool.fetchrow(
+        """SELECT is_creator, creator_status, vip, is_vip, vip_until,
+                  vip_expired, plan
+           FROM users WHERE user_id=$1""",
+        user_id
+    )
+    if not user:
+        return False, "free"
+
+    now = datetime.utcnow()
+    if bool(user["is_creator"]) and (user["creator_status"] or "") == "approved":
+        return True, "creator"
+
+    until = fix_datetime(user["vip_until"] or user["vip_expired"])
+    if not (bool(user["vip"]) or bool(user["is_vip"])) or not until or until <= now:
+        return False, "expired"
+
+    payment = await pool.fetchrow(
+        """SELECT package_id, code_limit FROM premium_payments
+           WHERE user_id=$1 AND status='paid'
+             AND access_until IS NOT NULL AND access_until > NOW()
+           ORDER BY paid_at DESC NULLS LAST, id DESC LIMIT 1""",
+        user_id
+    )
+
+    # Backward compatibility: an old VIP without a premium_payments row.
+    if not payment:
+        return True, "vip"
+
+    package_id = str(payment["package_id"] or "")
+    if package_id.endswith("d"):
+        return True, "vip_day"
+
+    normalized = str(code).strip().lower()
+    already = await pool.fetchval(
+        """SELECT EXISTS(
+             SELECT 1 FROM premium_code_usage
+             WHERE user_id=$1 AND code=$2
+           )""",
+        user_id, normalized
+    )
+    if already:
+        return True, "vip_clock_existing"
+
+    used = int(await pool.fetchval(
+        """SELECT COUNT(*) FROM premium_code_usage
+           WHERE user_id=$1 AND payment_id=$2""",
+        user_id, package_id
+    ) or 0)
+
+    if used >= 3:
+        return False, "limit"
+
+    if consume:
+        await pool.execute(
+            """INSERT INTO premium_code_usage(user_id,code,payment_id)
+               VALUES($1,$2,$3)
+               ON CONFLICT(user_id,code) DO NOTHING""",
+            user_id, normalized, package_id
+        )
+    return True, "vip_clock"
