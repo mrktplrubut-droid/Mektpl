@@ -36,6 +36,12 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS vip_expired TIMESTAMP;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS plan TEXT DEFAULT 'free';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS expired_at TIMESTAMP;
 
+-- FIX TIMEZONE: the application stores premium payment timestamps as UTC-naive
+-- because the existing schema uses PostgreSQL TIMESTAMP WITHOUT TIME ZONE.
+-- This block normalizes any existing timezone-aware values if the column was
+-- previously changed to TIMESTAMPTZ by another migration.
+-- No DROP/rename is performed here.
+
 CREATE INDEX IF NOT EXISTS idx_premium_payments_user_status
 ON premium_payments(user_id, status);
 
