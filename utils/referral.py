@@ -1,5 +1,4 @@
 from datetime import datetime, timedelta
-import pytz
 
 
 async def check_referral_reward(pool, user_id: int):
@@ -21,8 +20,8 @@ async def check_referral_reward(pool, user_id: int):
 
     total = data["referral_count"] or 0
 
-    wib = pytz.timezone("Asia/Jakarta")
-    now = datetime.now(wib)
+    # Database uses naive TIMESTAMP; keep reward calculations naive too.
+    now = datetime.now()
 
     reward_text = None
 
@@ -37,7 +36,9 @@ async def check_referral_reward(pool, user_id: int):
             """
             UPDATE users
             SET vip=TRUE,
+                is_vip=TRUE,
                 vip_until=$1,
+                vip_expired=$1,
                 paid_quota = COALESCE(paid_quota,0) + 1,
                 ref_10_claimed=TRUE
             WHERE user_id=$2
@@ -59,7 +60,9 @@ async def check_referral_reward(pool, user_id: int):
             """
             UPDATE users
             SET vip=TRUE,
+                is_vip=TRUE,
                 vip_until=$1,
+                vip_expired=$1,
                 paid_quota = COALESCE(paid_quota,0) + 3,
                 ref_20_claimed=TRUE
             WHERE user_id=$2
@@ -81,7 +84,11 @@ async def check_referral_reward(pool, user_id: int):
             """
             UPDATE users
             SET vvip=TRUE,
+                is_vvip=TRUE,
+                vip=TRUE,
+                is_vip=TRUE,
                 vvip_until=$1,
+                vvip_expired=$1,
                 ref_50_claimed=TRUE
             WHERE user_id=$2
             """,

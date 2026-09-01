@@ -14,4 +14,4 @@ async def get_user_language(user_id):
         user_id
     )
 
-    return lang or "en"
+    return lang or "id"

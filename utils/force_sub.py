@@ -1,80 +1,34 @@
 import logging
-
 from aiogram import Bot
-from aiogram.exceptions import (
-    TelegramBadRequest,
-    TelegramForbiddenError,
-)
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
-# =========================
-# FORCE SUB CHANNELS
-# =========================
 CHANNELS = [
-    -1003978483597,
-    -1004413314849,
+    {
+        "id": -1003978483597,
+        "name": "Channel Utama",
+        "url": "https://t.me/+CUAmQ49VFMw1MmRh",
+    },
+    {
+        "id": -1004413314849,
+        "name": "Channel Update",
+        "url": "https://t.me/+0ddS3Ha4c2pkNmJl",
+    },
 ]
 
-
-# =========================
-# CHECK FORCE SUB
-# =========================
-async def check_force_sub(bot: Bot, user_id: int) -> bool:
-    """
-    Return:
-        True  -> User sudah join semua channel.
-        False -> User belum join / terjadi error.
-    """
-
-    for channel_id in CHANNELS:
+async def get_missing_channels(bot: Bot, user_id: int) -> list[dict]:
+    missing = []
+    for channel in CHANNELS:
         try:
-            member = await bot.get_chat_member(
-                chat_id=channel_id,
-                user_id=user_id,
-            )
+            member = await bot.get_chat_member(channel["id"], user_id)
+            if member.status not in ("member", "administrator", "creator"):
+                missing.append(channel)
+        except (TelegramBadRequest, TelegramForbiddenError) as exc:
+            logging.warning("ForceSub check failed channel=%s user=%s: %s", channel["id"], user_id, exc)
+            missing.append(channel)
+        except Exception:
+            logging.exception("ForceSub unexpected error channel=%s user=%s", channel["id"], user_id)
+            missing.append(channel)
+    return missing
 
-            logging.info(
-                "CHANNEL %s | USER %s | STATUS %s",
-                channel_id,
-                user_id,
-                member.status,
-            )
-
-            if member.status not in (
-                "member",
-                "administrator",
-                "creator",
-            ):
-                logging.warning(
-                    "USER %s BELUM JOIN CHANNEL %s (STATUS=%s)",
-                    user_id,
-                    channel_id,
-                    member.status,
-                )
-                return False
-
-        except TelegramBadRequest as e:
-            logging.exception(
-                "ForceSub TelegramBadRequest | %s | %s",
-                channel_id,
-                e,
-            )
-            return False
-
-        except TelegramForbiddenError as e:
-            logging.exception(
-                "ForceSub TelegramForbiddenError | %s | %s",
-                channel_id,
-                e,
-            )
-            return False
-
-        except Exception as e:
-            logging.exception(
-                "ForceSub Unknown Error | %s | %s",
-                channel_id,
-                e,
-            )
-            return False
-
-    logging.info("USER %s LULUS FORCE SUB", user_id)
-    return True
+async def check_force_sub(bot: Bot, user_id: int) -> bool:
+    return not await get_missing_channels(bot, user_id)
