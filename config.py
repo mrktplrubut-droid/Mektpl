@@ -72,9 +72,6 @@ GROUP_ID = int(
 
 NOTIF_CHANNEL_ID = -1004413314849
 
-# Channel khusus log/notifikasi pembayaran VIP/Kreator.
-PAYMENT_CHANNEL_ID = int(os.getenv("PAYMENT_CHANNEL_ID", str(NOTIF_CHANNEL_ID)))
-
 # =========================
 # WITHDRAW
 # =========================

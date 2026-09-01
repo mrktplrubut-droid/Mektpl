@@ -1,12 +1,82 @@
-# Paket VIP / Kreator PasTele
-# Harga dalam Rupiah.
-
 VIP_PACKAGES = {
-    "vip1h": {"id":"vip1h", "name":"VIP 1 Jam", "hours":1, "price":10000, "type":"vip_clock", "code_limit":3},
-    "vip2h": {"id":"vip2h", "name":"VIP 2 Jam", "hours":2, "price":20000, "type":"vip_clock", "code_limit":3},
-    "vip3h": {"id":"vip3h", "name":"VIP 3 Jam", "hours":3, "price":30000, "type":"vip_clock", "code_limit":3},
-    "vip1d": {"id":"vip1d", "name":"VIP 1 Hari", "days":1, "price":35000, "type":"vip_day", "code_limit":0},
-    "vip3d": {"id":"vip3d", "name":"VIP 3 Hari", "days":3, "price":50000, "type":"vip_day", "code_limit":0},
-    "vip7d": {"id":"vip7d", "name":"VIP 7 Hari", "days":7, "price":70000, "type":"vip_day", "code_limit":0},
-    "creator": {"id":"creator", "name":"Kreator", "price":200000, "type":"creator", "code_limit":0},
+
+    "vip1": {
+        "id": "vip1",
+        "name": "VIP 1 Hari",
+        "days": 1,
+        "price": 20000,
+        "type": "vip",
+    },
+
+    "vip3": {
+        "id": "vip3",
+        "name": "VIP 3 Hari",
+        "days": 3,
+        "price": 40000,
+        "type": "vip",
+    },
+
+    "vip5": {
+        "id": "vip5",
+        "name": "VIP 5 Hari",
+        "days": 5,
+        "price": 60000,
+        "type": "vip",
+    },
+
+    "vip7": {
+        "id": "vip7",
+        "name": "VIP 7 Hari",
+        "days": 7,
+        "price": 80000,
+        "type": "vip",
+    },
+
+    "vip10": {
+        "id": "vip10",
+        "name": "VIP 10 Hari",
+        "days": 10,
+        "price": 100000,
+        "type": "vip",
+    },
+
+    "vip15": {
+        "id": "vip15",
+        "name": "VIP 15 Hari",
+        "days": 15,
+        "price": 130000,
+        "type": "vip",
+    },
+
+    "vvip15": {
+        "id": "vvip15",
+        "name": "VVIP 15 Hari",
+        "days": 15,
+        "price": 180000,
+        "type": "vvip",
+    },
+
+    "vvip20": {
+        "id": "vvip20",
+        "name": "VVIP 20 Hari",
+        "days": 20,
+        "price": 230000,
+        "type": "vvip",
+    },
+
+    "vvip25": {
+        "id": "vvip25",
+        "name": "VVIP 25 Hari",
+        "days": 25,
+        "price": 280000,
+        "type": "vvip",
+    },
+
+    "vvip30": {
+        "id": "vvip30",
+        "name": "VVIP 30 Hari",
+        "days": 30,
+        "price": 350000,
+        "type": "vvip",
+    },
 }

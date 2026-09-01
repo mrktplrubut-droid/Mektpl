@@ -4,6 +4,18 @@ from aiogram.fsm.state import State, StatesGroup
 # =========================
 # GET FILE (input code)
 # =========================
+class LanguageState(StatesGroup):
+    selecting = State()
+
+
+class VipManualState(StatesGroup):
+    waiting_reason = State()
+
+
+class FreeCodeState(StatesGroup):
+    waiting_share = State()
+
+
 class GetFileState(StatesGroup):
     wait_code = State()
 

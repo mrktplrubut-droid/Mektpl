@@ -140,7 +140,10 @@ async def init_db():
             ("vip_expired", "TIMESTAMP"),
             ("vvip_until", "TIMESTAMP"),
             ("vvip_expired", "TIMESTAMP"),
-            ("expired_at", "TIMESTAMP")
+            ("expired_at", "TIMESTAMP"),
+            ("language", "TEXT DEFAULT 'id'"),
+            ("free_share_count", "INT DEFAULT 0"),
+            ("paid_quota", "INT DEFAULT 0")
         ]
 
         for column_name, column_type in user_columns:
@@ -237,57 +240,57 @@ async def init_db():
             message_id BIGINT,
             group_message_id BIGINT,
             expires_at TIMESTAMP,
-            created_at TIMESTAMP DEFAULT NOW()
+            created_at TIMESTAMP DEFAULT NOW(),
+            reference TEXT,
+            provider TEXT,
+            invoice_id TEXT UNIQUE,
+            payment_url TEXT,
+            type TEXT DEFAULT 'vip',
+            paid_at TIMESTAMP,
+            fail_reason TEXT
         );
         """)
 
-        # ========================
-        # VIP / KREATOR PAYMENTS
-        # ========================
+        # Keep payment schema compatible with the VIP automatic flow.
+        for column_name, column_type in [
+            ("reference", "TEXT"),
+            ("provider", "TEXT"),
+            ("invoice_id", "TEXT"),
+            ("payment_url", "TEXT"),
+            ("type", "TEXT DEFAULT 'vip'"),
+            ("paid_at", "TIMESTAMP"),
+            ("fail_reason", "TEXT"),
+            ("seller_paid", "BOOLEAN DEFAULT FALSE"),
+        ]:
+            await conn.execute(
+                f"ALTER TABLE payments ADD COLUMN IF NOT EXISTS {column_name} {column_type};"
+            )
+
         await conn.execute("""
-        CREATE TABLE IF NOT EXISTS premium_payments (
+        CREATE TABLE IF NOT EXISTS vip_manual_payments (
             id SERIAL PRIMARY KEY,
             user_id BIGINT NOT NULL,
             package_id TEXT NOT NULL,
             amount BIGINT NOT NULL,
-            payment_id TEXT UNIQUE NOT NULL,
             status TEXT DEFAULT 'pending',
-            qr_string TEXT,
-            payment_url TEXT,
-            expires_at TIMESTAMP,
-            access_until TIMESTAMP,
-            code_limit INT DEFAULT 0,
-            paid_at TIMESTAMP,
-            created_at TIMESTAMP DEFAULT NOW()
-        );
-        """)
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS premium_code_usage (
-            user_id BIGINT NOT NULL,
-            code TEXT NOT NULL,
-            payment_id TEXT,
+            reason TEXT,
+            admin_id BIGINT,
             created_at TIMESTAMP DEFAULT NOW(),
-            PRIMARY KEY (user_id, code)
+            reviewed_at TIMESTAMP
         );
         """)
 
-        # ========================
-        # USER NOTIFICATIONS
-        # ========================
         await conn.execute("""
-        CREATE TABLE IF NOT EXISTS user_notifications (
+        CREATE TABLE IF NOT EXISTS free_code_unlocks (
             id SERIAL PRIMARY KEY,
+            code TEXT NOT NULL,
             user_id BIGINT NOT NULL,
-            type TEXT NOT NULL DEFAULT 'info',
-            title TEXT NOT NULL,
-            message TEXT NOT NULL,
-            is_read BOOLEAN DEFAULT FALSE,
-            created_at TIMESTAMP DEFAULT NOW()
+            share_count INT DEFAULT 0,
+            completed BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT NOW(),
+            completed_at TIMESTAMP,
+            UNIQUE(code, user_id)
         );
-        """)
-        await conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_user_notifications_user
-        ON user_notifications(user_id, is_read, created_at DESC);
         """)
 
         # ========================
@@ -432,6 +435,8 @@ async def init_db():
             ("review_count", "BIGINT DEFAULT 0"),
             ("seller_id", "BIGINT"),
             ("owner_id", "BIGINT"),
+            ("free_progress", "INT DEFAULT 0"),
+            ("free_unlock_enabled", "BOOLEAN DEFAULT TRUE"),
         ]
 
         for column_name, column_type in file_columns:
