@@ -4,22 +4,22 @@ from aiogram.types import (
 )
 
 
-def home_kb(user_id: int):
+def home_kb(user_id: int, lang: str = "id"):
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="📤 Upload File",
+                    text="📤 Upload File" if lang == "id" else "📤 Upload",
                     callback_data="upfile"
                 ),
                 InlineKeyboardButton(
-                    text="📥 Get File",
+                    text="📥 Get File" if lang == "id" else "📥 Get Code",
                     callback_data="getfile"
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="👤 Account",
+                    text="👤 Account" if lang == "id" else "👤 Account",
                     callback_data="account"
                 ),
                 InlineKeyboardButton(
@@ -29,17 +29,15 @@ def home_kb(user_id: int):
             ],
             [
                 InlineKeyboardButton(
-                    text="💎 VIP / Kreator",
-                    callback_data="premium"
-                )
-            ],
-            [
+                    text="🎨 Kreator" if lang == "id" else "🎨 Creator",
+                    callback_data="creator"
+                ),
                 InlineKeyboardButton(
-                    text="📂 Menu Lainnya",
+                    text="📂 Menu Lainnya" if lang == "id" else "📂 More Menu",
                     callback_data="menu_lainnya"
                 ),
                 InlineKeyboardButton(
-                    text="❓ Bantuan",
+                    text="❓ Bantuan" if lang == "id" else "❓ Help",
                     callback_data="help"
                 )
             ]
