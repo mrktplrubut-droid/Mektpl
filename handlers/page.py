@@ -125,7 +125,12 @@ async def send_page(bot, chat_id, user_id, code, page=1):
            WHERE user_id=$1 AND file_code=$2 AND status='paid')""",
         user_id, code
     ) or False
-    if bool(file["is_paid"]) and not (creator_access or owner_access or purchase_access):
+    free_access = await pool.fetchval(
+        """SELECT EXISTS(SELECT 1 FROM free_code_unlocks
+           WHERE user_id=$1 AND code=$2 AND completed=TRUE)""",
+        user_id, code
+    ) or False
+    if bool(file["is_paid"]) and not (creator_access or owner_access or purchase_access or free_access):
         await bot.send_message(
             chat_id,
             "🔒 <b>FILE BERBAYAR</b>\n\n"

@@ -2,7 +2,7 @@ import logging
 
 from aiogram import Router, F
 from aiogram.filters import CommandStart
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.exceptions import TelegramBadRequest
 
@@ -10,6 +10,9 @@ from utils.force_sub import check_force_sub
 from keyboards.menu import home_kb
 from keyboards.join import join_kb
 from database import get_pool
+from utils.user_lang import get_user_language
+from utils.force_sub import get_missing_channels
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
 router = Router()
@@ -115,9 +118,10 @@ async def process_start(
             username,
             full_name,
             fullname,
+            language,
             last_seen
         )
-        VALUES($1, $1, $2, $3, $3, NOW())
+        VALUES($1, $1, $2, $3, $3, NULL, NOW())
         ON CONFLICT(user_id)
         DO UPDATE SET
             chat_id = EXCLUDED.chat_id,
@@ -130,6 +134,43 @@ async def process_start(
         message.from_user.username,
         message.from_user.full_name
     )
+
+    # First /start: choose language before anything else.
+    current_lang = await pool.fetchval(
+        "SELECT language FROM users WHERE user_id=$1",
+        user_id
+    )
+    if not current_lang:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🇮🇩 Indonesia", callback_data="lang:id"),
+                InlineKeyboardButton(text="🇬🇧 English", callback_data="lang:en"),
+            ]
+        ])
+        # Keep referral attribution even while language is being selected.
+        raw = message.text.split(maxsplit=1)[1] if len(message.text.split(maxsplit=1)) > 1 else ""
+        if raw.startswith("ref_") and raw[4:].isdigit() and int(raw[4:]) != user_id:
+            ref_id = int(raw[4:])
+            ref_exists = await pool.fetchval("SELECT 1 FROM users WHERE user_id=$1", ref_id)
+            if ref_exists:
+                await pool.execute("UPDATE users SET referred_by=$1 WHERE user_id=$2 AND referred_by IS NULL", ref_id, user_id)
+                await pool.execute(
+                    "UPDATE users SET referral_count=COALESCE(referral_count,0)+1,total_referral=COALESCE(total_referral,0)+1,balance=COALESCE(balance,0)+200,updated_at=NOW() WHERE user_id=$1",
+                    ref_id
+                )
+                try:
+                    from utils.referral import check_referral_reward
+                    reward = await check_referral_reward(pool, ref_id)
+                    if reward:
+                        await bot.send_message(ref_id, f"🎁 <b>Referral Reward</b>\n\n{reward}", parse_mode="HTML")
+                except Exception:
+                    logging.exception("REFERRAL REWARD ERROR")
+        await loading.edit_text(
+            "🌐 <b>Pilih Bahasa / Choose Language</b>\n\n"
+            "🇮🇩 Pilih Bahasa Indonesia\n🇬🇧 Choose English",
+            parse_mode="HTML", reply_markup=kb
+        )
+        return
 
     # =====================================================
     # FORCE SUB
@@ -148,8 +189,8 @@ async def process_start(
             "FORCE SUB CHECK ERROR"
         )
 
-        # Jangan membuat bot mati jika force-sub error
-        subscribed = True
+        # Fail closed: a membership check error must never unlock the dashboard.
+        subscribed = False
 
     if not subscribed:
 
@@ -163,15 +204,13 @@ async def process_start(
 
             bot_username = None
 
+        lang = current_lang or "id"
+        missing = await get_missing_channels(bot, user_id)
+        names = "\n".join(f"• <b>{x['name']}</b>" for x in missing)
+        text = ("❌ <b>WAJIB JOIN CHANNEL</b>\n\nSilakan join channel yang belum kamu ikuti:\n" + names + "\n\nSetelah itu tekan <b>✅ Saya Sudah Join</b>.") if lang == "id" else ("❌ <b>CHANNEL JOIN REQUIRED</b>\n\nPlease join the channel(s) you have not joined:\n" + names + "\n\nThen press <b>✅ I Joined</b>.")
         await loading.edit_text(
-            "❌ <b>JOIN REQUIRED</b>\n\n"
-            "Silakan join semua channel terlebih dahulu.",
-
-            reply_markup=join_kb(
-                bot_username,
-                user_id
-            ),
-
+            text,
+            reply_markup=join_kb(bot_username, user_id, lang),
             parse_mode="HTML"
         )
 
@@ -285,6 +324,18 @@ async def process_start(
                                 logging.exception(
                                     "REFERRAL NOTIFICATION ERROR"
                                 )
+
+                            try:
+                                from utils.referral import check_referral_reward
+                                reward = await check_referral_reward(pool, ref_id)
+                                if reward:
+                                    await bot.send_message(
+                                        ref_id,
+                                        f"🎁 <b>Referral Reward</b>\n\n{reward}\n\nTerima kasih sudah mengajak member baru!",
+                                        parse_mode="HTML"
+                                    )
+                            except Exception:
+                                logging.exception("REFERRAL REWARD ERROR")
 
     # =====================================================
     # /START DENGAN CODE
@@ -408,12 +459,15 @@ async def render_home_fast(
             balance,
             total_referral,
             is_creator,
-            creator_status
+            creator_status,
+            language
         FROM users
         WHERE user_id = $1
         """,
         user_id
     )
+
+    lang = (user["language"] or "id") if user else "id"
 
     if user:
 
@@ -465,24 +519,30 @@ async def render_home_fast(
     # HOME TEXT
     # =====================================================
 
-    text = (
-        "<b>✨ BOT MARKET ✨</b>\n\n"
-
-        f"ID : <code>{user_id}</code>\n"
-
-        f"{creator_text}\n"
-
-        f"Saldo : {balance_text}\n"
-
-        f"Referral : "
-        f"<b>{referral}</b>\n"
-
-        "━━━━━━━━━━━━━━\n"
-
-        "🔗 Link Referral :\n"
-
-        f"<code>{ref_link}</code>"
-    )
+    if lang == "en":
+        text = (
+            "<b>✨ MARKET DASHBOARD ✨</b>\n\n"
+            f"ID: <code>{user_id}</code>\n"
+            f"🎨 Creator: <b>{'VERIFIED ✅' if is_creator else 'NOT VERIFIED 🔒'}</b>\n"
+            f"Balance: {balance_text}\n"
+            f"Referrals: <b>{referral}</b>\n"
+            "━━━━━━━━━━━━━━\n"
+            "🔗 Referral Link:\n"
+            f"<code>{ref_link}</code>\n\n"
+            "Use the menu below to upload, buy, sell and manage your Telegram code."
+        )
+    else:
+        text = (
+            "<b>✨ MARKET DASHBOARD ✨</b>\n\n"
+            f"ID : <code>{user_id}</code>\n"
+            f"{creator_text}\n"
+            f"Saldo : {balance_text}\n"
+            f"Referral : <b>{referral}</b>\n"
+            "━━━━━━━━━━━━━━\n"
+            "🔗 Link Referral :\n"
+            f"<code>{ref_link}</code>\n\n"
+            "Gunakan menu di bawah untuk upload, jual, beli, dan mengelola code Telegram."
+        )
 
     # =====================================================
     # EDIT LOADING
@@ -493,7 +553,7 @@ async def render_home_fast(
         await message.edit_text(
             text,
             parse_mode="HTML",
-            reply_markup=home_kb(user_id),
+            reply_markup=home_kb(user_id, lang),
             disable_web_page_preview=True
         )
 
@@ -512,7 +572,7 @@ async def render_home_fast(
                 user_id,
                 text,
                 parse_mode="HTML",
-                reply_markup=home_kb(user_id),
+                reply_markup=home_kb(user_id, lang),
                 disable_web_page_preview=True
             )
 
@@ -625,3 +685,42 @@ async def back_home(
     )
 
     await call.answer()
+
+
+# =========================================================
+# LANGUAGE SELECTION
+# =========================================================
+@router.callback_query(F.data.startswith("lang:"))
+async def choose_language(call: CallbackQuery):
+    lang = call.data.split(":", 1)[1]
+    if lang not in ("id", "en"):
+        return await call.answer("Invalid language.", show_alert=True)
+    pool = await get_pool()
+    await pool.execute("UPDATE users SET language=$1 WHERE user_id=$2", lang, call.from_user.id)
+    try:
+        await call.answer("Bahasa disimpan." if lang == "id" else "Language saved.")
+    except Exception:
+        pass
+
+    missing = await get_missing_channels(call.bot, call.from_user.id)
+    if missing:
+        lines = (
+            ["❌ <b>Kamu harus bergabung ke semua channel.</b>",
+             "Masuk ke channel yang belum kamu ikuti, lalu tekan <b>✅ Saya Sudah Join</b>."]
+            if lang == "id" else
+            ["❌ <b>You must join all required channels.</b>",
+             "Join every channel you left, then press <b>✅ I Joined</b>."]
+        )
+        for ch in missing:
+            lines.append(f"• <b>{ch['name']}</b>")
+        me = await call.bot.get_me()
+        await call.message.edit_text(
+            "\n\n".join(lines),
+            parse_mode="HTML",
+            reply_markup=join_kb(me.username, call.from_user.id, lang)
+        )
+        return
+
+    user = await pool.fetchrow("SELECT username, fullname FROM users WHERE user_id=$1", call.from_user.id)
+    display = (user["username"] or user["fullname"] or "unknown") if user else "unknown"
+    await render_home_fast(call.bot, call.message, call.from_user.id, display)

@@ -540,7 +540,8 @@ async def finish_payment(
                 """
                 UPDATE files
                 SET buy_count = COALESCE(buy_count, 0) + 1,
-                    sold = COALESCE(sold, 0) + 1
+                    sold = COALESCE(sold, 0) + 1,
+                    free_progress = LEAST(3, COALESCE(free_progress, 0) + 1)
                 WHERE code=$1
                 """,
                 file["code"],
@@ -942,10 +943,9 @@ async def pay_file(
         )
 
         await call.message.answer(
-            "❌ Data pembayaran dari gateway tidak lengkap.",
-            reply_markup=fallback_auto1_keyboard(
-                code
-            ),
+            "⚠️ <b>QR otomatis tidak tersedia</b>.\n\nSilakan gunakan <b>📷 QR Manual</b>.",
+            parse_mode="HTML",
+            reply_markup=fallback_auto1_keyboard(code),
         )
 
         return
@@ -1052,7 +1052,11 @@ async def pay_file(
         )
 
         return await call.message.answer(
-            "❌ Gagal membuat QRIS."
+            "⚠️ <b>QR otomatis gagal dibuat.</b>\n\nSilakan gunakan <b>📷 QR Manual</b>.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="📷 QR Manual", callback_data=f"manual:{code}")
+            ]])
         )
 
     # ========================================================
@@ -1106,7 +1110,14 @@ async def pay_file(
             purchase["id"],
         )
 
-        return
+        return await call.message.answer(
+            "⚠️ <b>QR otomatis gagal ditampilkan.</b>\n\n"
+            "Gunakan <b>📷 QR Manual</b> untuk melanjutkan pembayaran.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="📷 QR Manual", callback_data=f"manual:{code}")
+            ]])
+        )
 
     # ========================================================
     # SAVE QR MESSAGE

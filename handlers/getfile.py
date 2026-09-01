@@ -286,22 +286,14 @@ async def open_file_by_code(
     )
 
     # =====================================
-    # CEK AKSES VIP / KREATOR
+    # CEK AKSES
     # =====================================
-    from utils.user import has_premium_access
-
-    premium_access = False
-    premium_reason = "free"
-    if is_paid and not owner and not access:
-        premium_access, premium_reason = await has_premium_access(
-            pool, message.from_user.id, code, consume=True
-        )
 
     has_access = (
         owner
         or access
         or creator_access
-        or premium_access
+        or user_level in ("vip", "vvip")
     )
 
     # =====================================
@@ -337,14 +329,6 @@ async def open_file_by_code(
     # =====================================
 
     if is_paid and not has_access:
-
-        if premium_reason == "limit":
-            return await message.answer(
-                "⏱️ <b>LIMIT VIP JAM TERCAPAI</b>\\n\\n"
-                "Paket VIP jam kamu sudah digunakan untuk 3 code unik. "
-                "Silakan beli paket VIP lagi untuk mendapatkan akses berikutnya.",
-                parse_mode="HTML"
-            )
 
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[

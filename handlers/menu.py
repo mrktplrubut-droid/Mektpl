@@ -33,12 +33,6 @@ async def home_kb(user_id: int):
             ],
             [
                 InlineKeyboardButton(
-                    text="💎 VIP / Kreator",
-                    callback_data="premium"
-                )
-            ],
-            [
-                InlineKeyboardButton(
                     text="📂 Menu Lainnya",
                     callback_data="menu_lainnya"
                 ),

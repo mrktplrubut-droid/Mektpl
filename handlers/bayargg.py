@@ -125,6 +125,11 @@ async def bayargg_webhook(request: Request):
                 invoice_id
             )
 
+            # Each successful purchase advances the seller's 3-step marketplace progress.
+            await pool.execute(
+                "UPDATE files SET buy_count=COALESCE(buy_count,0)+1, sold=COALESCE(sold,0)+1, free_progress=LEAST(3,COALESCE(free_progress,0)+1) WHERE code=$1",
+                purchase["file_code"]
+            )
 
 
             # HAPUS QR PAYMENT

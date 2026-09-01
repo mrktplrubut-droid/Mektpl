@@ -7,6 +7,7 @@ from aiogram.types import (
 )
 
 from database import get_pool
+from urllib.parse import quote
 
 
 router = Router()
@@ -34,11 +35,7 @@ async def open_account(
             is_creator,
             creator_status,
             creator_verified_at,
-            balance,
-            vip,
-            is_vip,
-            vip_until,
-            plan
+            balance
         FROM users
         WHERE user_id = $1
         """,
@@ -68,16 +65,6 @@ async def open_account(
     )
 
     balance = user["balance"] or 0
-    vip_active = bool(user["vip"] or user["is_vip"])
-    vip_until = user["vip_until"]
-    plan = user["plan"] or "free"
-
-    if vip_active and vip_until:
-        vip_status_text = f"💎 <b>VIP AKTIF</b> • sampai <b>{vip_until:%d-%m-%Y %H:%M} WIB</b>"
-    elif is_creator and creator_status == "approved":
-        vip_status_text = "🎨 <b>KREATOR AKTIF PERMANEN</b>"
-    else:
-        vip_status_text = "🔒 <b>VIP belum aktif</b>"
 
     # =====================================
     # REFERRAL LINK
@@ -191,7 +178,6 @@ async def open_account(
 
         f"💰 <b>Saldo</b>\n"
         f"<b>Rp {balance:,}</b>\n\n"
-        f"{vip_status_text}\n\n"
 
         "🎯 <b>REFERRAL</b>\n"
         f"👥 Total Undangan : "
@@ -207,12 +193,21 @@ async def open_account(
     # KEYBOARD
     # =====================================
 
+    share_text = quote("🤖 Gabung marketplace bot saya! Upload, jual, beli, dan bagikan code Telegram.")
+    share_url = f"https://t.me/share/url?url={quote(ref_link)}&text={share_text}"
+
     keyboard_rows = [
+        [
+            InlineKeyboardButton(
+                text="📤 Bagikan Referral",
+                url=share_url
+            )
+        ],
 
         [
             InlineKeyboardButton(
-                text="🔔 Notifikasi",
-                callback_data="account_notifications"
+                text="🌐 Bahasa / Language",
+                callback_data="change_language"
             )
         ],
         [
@@ -654,47 +649,11 @@ async def creator_status_handler(
     await call.answer()
 
 
-# =====================================
-# ACCOUNT NOTIFICATIONS
-# =====================================
-@router.callback_query(F.data == "account_notifications")
-async def account_notifications(call: CallbackQuery):
-    pool = await get_pool()
-    rows = await pool.fetchrow(
-        """
-        SELECT
-            COUNT(*) FILTER (WHERE is_read = FALSE) AS unread,
-            COUNT(*) AS total
-        FROM user_notifications
-        WHERE user_id=$1
-        """, call.from_user.id
-    )
-    notes = await pool.fetch(
-        """
-        SELECT id, type, title, message, is_read, created_at
-        FROM user_notifications
-        WHERE user_id=$1
-        ORDER BY created_at DESC
-        LIMIT 15
-        """, call.from_user.id
-    )
-    if not notes:
-        text = "🔔 <b>NOTIFIKASI AKUN</b>\n━━━━━━━━━━━━━━━━━━\n\nTidak ada notifikasi."
-    else:
-        parts = [f"🔔 <b>NOTIFIKASI AKUN</b>\n━━━━━━━━━━━━━━━━━━\n\n📬 Belum dibaca: <b>{rows['unread']}</b>\n"]
-        for n in notes:
-            icon = "🔵" if not n["is_read"] else "⚪"
-            when = n["created_at"].strftime("%d-%m-%Y %H:%M") if n["created_at"] else "-"
-            parts.append(f"{icon} <b>{n['title']}</b>\n{n['message']}\n<code>{when} WIB</code>\n")
-        text = "\n".join(parts)
-
-    await pool.execute(
-        "UPDATE user_notifications SET is_read=TRUE WHERE user_id=$1 AND is_read=FALSE",
-        call.from_user.id
-    )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💎 VIP / Kreator", callback_data="premium")],
-        [InlineKeyboardButton(text="🔙 Kembali", callback_data="account")]
-    ])
-    await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+@router.callback_query(F.data == "change_language")
+async def change_language(call: CallbackQuery):
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🇮🇩 Indonesia", callback_data="lang:id"),
+        InlineKeyboardButton(text="🇬🇧 English", callback_data="lang:en")
+    ], [InlineKeyboardButton(text="🔙 Kembali", callback_data="account")]])
+    await call.message.edit_text("🌐 <b>Pilih Bahasa / Choose Language</b>", parse_mode="HTML", reply_markup=kb)
     await call.answer()

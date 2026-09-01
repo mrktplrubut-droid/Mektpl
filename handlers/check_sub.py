@@ -4,10 +4,11 @@ from aiogram import Router, F
 from aiogram.types import CallbackQuery
 from aiogram.exceptions import TelegramBadRequest
 
-from utils.force_sub import check_force_sub
+from utils.force_sub import check_force_sub, get_missing_channels
 from keyboards.join import join_kb
 from handlers.start import render_home_fast
 from database import get_pool
+from utils.user_lang import get_user_language
 
 router = Router()
 
@@ -26,6 +27,7 @@ async def check_sub_callback(call: CallbackQuery):
         if call.from_user.username
         else call.from_user.full_name
     )
+    lang = await get_user_language(user_id)
 
     logging.info(
         f"CHECK SUB CLICKED: {user_id}"
@@ -63,31 +65,31 @@ async def check_sub_callback(call: CallbackQuery):
 
     if not ok:
 
+        missing = await get_missing_channels(call.bot, user_id)
+        names = "\n".join(f"• <b>{x['name']}</b>" for x in missing)
+        text = (
+            "❌ <b>WAJIB JOIN CHANNEL</b>\n\n"
+            f"Channel yang belum kamu ikuti:\n{names}\n\n"
+            "Silakan join lalu tekan <b>✅ Saya Sudah Join</b>."
+            if lang == "id" else
+            "❌ <b>CHANNEL JOIN REQUIRED</b>\n\n"
+            f"Channels you have not joined:\n{names}\n\n"
+            "Join them and press <b>✅ I Joined</b>."
+        )
         await call.answer(
-            "❌ Kamu belum join semua channel.",
+            "❌ Masih ada channel yang belum diikuti." if lang == "id" else "❌ Some required channels are still missing.",
             show_alert=True
         )
-
         try:
-
+            me = await call.bot.get_me()
             await call.message.edit_text(
-                (
-                    "❌ <b>JOIN REQUIRED</b>\n\n"
-                    "Silakan join semua channel terlebih dahulu.\n\n"
-                    "Setelah selesai, tekan tombol "
-                    "<b>✅ CHECK</b>."
-                ),
+                text,
                 parse_mode="HTML",
-                reply_markup=join_kb()
+                reply_markup=join_kb(me.username, user_id, lang)
             )
-
         except TelegramBadRequest as e:
-
             if "message is not modified" not in str(e).lower():
-                logging.exception(
-                    "JOIN MESSAGE EDIT ERROR"
-                )
-
+                logging.exception("JOIN MESSAGE EDIT ERROR")
         return
 
     # =====================================================

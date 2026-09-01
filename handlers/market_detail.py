@@ -35,7 +35,9 @@ async def market_detail(call: CallbackQuery):
             COALESCE(review_count, 0) AS review_count,
             COALESCE(favorite_count, 0) AS favorite_count,
             COALESCE(likes, 0) AS likes,
-            COALESCE(dislikes, 0) AS dislikes
+            COALESCE(dislikes, 0) AS dislikes,
+            COALESCE(free_progress, 0) AS free_progress,
+            COALESCE(free_unlock_enabled, TRUE) AS free_unlock_enabled
 
         FROM files
         WHERE code = $1
@@ -105,6 +107,13 @@ async def market_detail(call: CallbackQuery):
                 callback_data=f"pay:{code}"
             )
         ])
+        if file["free_unlock_enabled"] and int(file["free_progress"] or 0) < 3:
+            keyboard.append([
+                InlineKeyboardButton(
+                    text=f"🎁 Buka Gratis • {int(file['free_progress'] or 0)}/3",
+                    callback_data=f"freeopen:{code}"
+                )
+            ])
     else:
         keyboard.append([
             InlineKeyboardButton(
@@ -163,3 +172,117 @@ async def market_detail(call: CallbackQuery):
             inline_keyboard=keyboard
         )
     )
+
+
+@router.callback_query(F.data.startswith("freeopen:"))
+async def free_open(call: CallbackQuery):
+    code = call.data.split(":", 1)[1]
+    pool = await __import__("database").get_pool()
+    file = await pool.fetchrow(
+        """SELECT code,title,price,free_unlock_enabled
+           FROM files WHERE code=$1 LIMIT 1""", code
+    )
+    if not file:
+        return await call.answer("❌ Code tidak ditemukan.", show_alert=True)
+    if not file["free_unlock_enabled"]:
+        return await call.answer("❌ Buka gratis tidak tersedia untuk code ini.", show_alert=True)
+
+    await pool.execute(
+        """INSERT INTO free_code_unlocks(code,user_id,share_count,completed)
+           VALUES($1,$2,0,FALSE)
+           ON CONFLICT(code,user_id) DO NOTHING""",
+        code, call.from_user.id
+    )
+    progress = await pool.fetchval(
+        "SELECT share_count FROM free_code_unlocks WHERE code=$1 AND user_id=$2",
+        code, call.from_user.id
+    )
+    progress = int(progress or 0)
+
+    if progress >= 3:
+        return await call.message.edit_text(
+            "🎉 <b>CODE GRATIS TERBUKA</b>\n\n"
+            f"🔑 <code>{code}</code>\n"
+            "Sekarang kamu bisa membuka code ini tanpa pembayaran.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📂 Buka Code", callback_data=f"page:{code}:1")],
+                [InlineKeyboardButton(text="⬅️ Marketplace", callback_data="marketplace")]
+            ])
+        )
+
+    me = await call.bot.get_me()
+    share_url = share_url_for_code(me, code, file["title"] or code)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"📤 Bagikan Code • {progress}/3", url=share_url)],
+        [InlineKeyboardButton(text="✅ Saya Sudah Bagikan", callback_data=f"freeshare:{code}")],
+        [InlineKeyboardButton(text="⬅️ Kembali", callback_data=f"market:{code}")]
+    ])
+    await call.message.edit_text(
+        "🎁 <b>BUKA CODE GRATIS</b>\n━━━━━━━━━━━━━━\n\n"
+        "Ingin membuka code tanpa membeli?\n"
+        "Bagikan code ini untuk membantu seller mendapatkan pembeli.\n\n"
+        f"📈 Progress kamu: <b>{progress}/3</b>\n"
+        "Setelah 3 aksi bagikan, akses gratis akan terbuka.",
+        parse_mode="HTML", reply_markup=kb
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("freeshare:"))
+async def free_share(call: CallbackQuery):
+    code = call.data.split(":", 1)[1]
+    pool = await __import__("database").get_pool()
+    file = await pool.fetchrow(
+        "SELECT code,title,free_unlock_enabled FROM files WHERE code=$1", code
+    )
+    if not file:
+        return await call.answer("❌ Code tidak ditemukan.", show_alert=True)
+    if not file["free_unlock_enabled"]:
+        return await call.answer("❌ Fitur gratis tidak tersedia.", show_alert=True)
+
+    await pool.execute(
+        """INSERT INTO free_code_unlocks(code,user_id,share_count,completed)
+           VALUES($1,$2,1,FALSE)
+           ON CONFLICT(code,user_id)
+           DO UPDATE SET share_count=LEAST(3,free_code_unlocks.share_count+1)""",
+        code, call.from_user.id
+    )
+    progress = int(await pool.fetchval(
+        "SELECT share_count FROM free_code_unlocks WHERE code=$1 AND user_id=$2",
+        code, call.from_user.id
+    ) or 0)
+    completed = progress >= 3
+    await pool.execute(
+        "UPDATE free_code_unlocks SET completed=$1,completed_at=CASE WHEN $1 THEN COALESCE(completed_at,NOW()) ELSE completed_at END WHERE code=$2 AND user_id=$3",
+        completed, code, call.from_user.id
+    )
+
+    if completed:
+        await call.answer("🎉 Progress 3/3! Code gratis terbuka.", show_alert=True)
+        return await call.message.edit_text(
+            "🎉 <b>CODE GRATIS AKTIF</b>\n\n"
+            f"🔑 Code: <code>{code}</code>\n"
+            "Sekarang kamu bisa membuka code ini tanpa pembayaran.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📂 Buka Code", callback_data=f"page:{code}:1")],
+                [InlineKeyboardButton(text="⬅️ Marketplace", callback_data="marketplace")]
+            ])
+        )
+
+    me = await call.bot.get_me()
+    await call.answer(f"Progress {progress}/3.", show_alert=True)
+    await call.message.edit_reply_markup(
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"📤 Bagikan Code • {progress}/3", url=share_url_for_code(me, code, file["title"] or code))],
+            [InlineKeyboardButton(text="✅ Saya Sudah Bagikan", callback_data=f"freeshare:{code}")],
+            [InlineKeyboardButton(text="⬅️ Kembali", callback_data=f"market:{code}")]
+        ])
+    )
+
+
+def share_url_for_code(me, code, title=""):
+    
+    from urllib.parse import quote
+    return "https://t.me/share/url?" + f"url={quote(f'https://t.me/{me.username}?start={code}')}&text={quote('🤖 Coba code Telegram dari Marketplace!')}"

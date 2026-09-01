@@ -1507,22 +1507,15 @@ async def send_paid_review(
     bot_username = me.username or "Unknown"
 
     # -----------------------------------------------------
-    # CREATOR
-    # -----------------------------------------------------
-
-    if username:
-        creator_text = f"@{username}"
-    else:
-        creator_text = f"<code>{mask_user_id(user_id)}</code>"
-
-    # -----------------------------------------------------
     # CAPTION
+    # Username creator intentionally omitted from the public
+    # review channel for privacy. The marketplace still keeps
+    # the owner internally for sales and moderation.
     # -----------------------------------------------------
 
     caption = (
         "💰 <b>PAID FILE</b>\n"
         f"🤖 Bot : @{bot_username}\n"
-        f"👤 Creator : {creator_text}\n"
         f"📝 Judul : {title}\n"
         f"📦 Total Media : {media_count}\n"
         f"💵 Harga : <b>{rupiah(price)}</b>\n"
