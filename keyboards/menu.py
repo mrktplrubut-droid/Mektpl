@@ -1,47 +1,202 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-
-
-def _b(text, data=None, url=None):
-    return InlineKeyboardButton(text=text, callback_data=data, url=url)
-
-
-def home_kb(user_id: int, lang: str = "id", is_creator: bool = False):
+def _button(
+    text: str,
+    callback_data: str | None = None,
+    url: str | None = None,
+) -> InlineKeyboardButton:
+    return InlineKeyboardButton(
+        text=text,
+        callback_data=callback_data,
+        url=url,
+    )
+# ============================================================
+# HOME
+# ============================================================
+def home_kb(
+    user_id: int,
+    lang: str = "id",
+    is_creator: bool = False,
+) -> InlineKeyboardMarkup:
     idn = lang == "id"
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [_b("📤 Upfile" if idn else "📤 Upfile", "upfile"), _b("📥 Getfile" if idn else "📥 Getfile", "getfile")],
-        [_b("🛍️ Marketplace", "marketplace"), _b("👤 Account" if idn else "👤 Account", "account")],
-        [_b("📂 Menu Lainnya" if idn else "📂 More Menu", "menu_lainnya"), _b("❓ Help" if idn else "❓ Help", "help")],
-    ])
-
-
-def account_kb(lang="id", is_creator=False):
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _button(
+                    "📤 Upfile",
+                    callback_data="upfile",
+                ),
+                _button(
+                    "📥 Getfile",
+                    callback_data="getfile",
+                ),
+            ],
+            [
+                _button(
+                    "🛍️ Marketplace",
+                    callback_data="marketplace",
+                ),
+                _button(
+                    "👤 Account" if idn else "👤 Account",
+                    callback_data="account",
+                ),
+            ],
+            [
+                _button(
+                    "📂 Menu Lainnya"
+                    if idn
+                    else "📂 More Menu",
+                    callback_data="menu_lainnya",
+                ),
+                _button(
+                    "❓ Help",
+                    callback_data="help",
+                ),
+            ],
+        ]
+    )
+# ============================================================
+# ACCOUNT
+# ============================================================
+def account_kb(
+    lang: str = "id",
+    is_creator: bool = False,
+) -> InlineKeyboardMarkup:
     idn = lang == "id"
     rows = [
-        [_b("⚙️ Pengaturan" if idn else "⚙️ Settings", "account_settings")],
-        [_b("🎨 Kreator" if idn else "🎨 Creator", "creator"), _b("💎 VIP", "vvip")],
+        [
+            _button(
+                "⚙️ Pengaturan"
+                if idn
+                else "⚙️ Settings",
+                callback_data="account_settings",
+            )
+        ],
+        [
+            _button(
+                "🎨 Kreator"
+                if idn
+                else "🎨 Creator",
+                callback_data="creator",
+            ),
+            _button(
+                "💎 VIP",
+                callback_data="vvip",
+            ),
+        ],
     ]
     if is_creator:
-        rows.append([_b("💸 Withdraw" if idn else "💸 Withdraw", "withdraw")])
-    rows.append([_b("⬅️ Kembali" if idn else "⬅️ Back", "home")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def settings_kb(lang="id"):
+        rows.append(
+            [
+                _button(
+                    "💸 Withdraw"
+                    if idn
+                    else "💸 Withdraw",
+                    callback_data="withdraw",
+                )
+            ]
+        )
+    rows.append(
+        [
+            _button(
+                "⬅️ Kembali"
+                if idn
+                else "⬅️ Back",
+                callback_data="home",
+            )
+        ]
+    )
+    return InlineKeyboardMarkup(
+        inline_keyboard=rows
+    )
+# ============================================================
+# SETTINGS
+# ============================================================
+def settings_kb(
+    lang: str = "id",
+) -> InlineKeyboardMarkup:
     idn = lang == "id"
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [_b("💳 Setting Withdraw" if idn else "💳 Withdraw Settings", "ewallet")],
-        [_b("🌐 Bahasa" if idn else "🌐 Language", "change_language")],
-        [_b("⬅️ Account" if idn else "⬅️ Account", "account")],
-    ])
-
-
-def other_menu_kb(lang="id"):
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _button(
+                    "💳 Setting Withdraw"
+                    if idn
+                    else "💳 Withdraw Settings",
+                    callback_data="ewallet",
+                )
+            ],
+            [
+                _button(
+                    "🌐 Bahasa"
+                    if idn
+                    else "🌐 Language",
+                    callback_data="change_language",
+                )
+            ],
+            [
+                _button(
+                    "⬅️ Account"
+                    if idn
+                    else "⬅️ Account",
+                    callback_data="account",
+                )
+            ],
+        ]
+    )
+# ============================================================
+# OTHER MENU
+# ============================================================
+def other_menu_kb(
+    lang: str = "id",
+) -> InlineKeyboardMarkup:
     idn = lang == "id"
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [_b("⭐ Channel Review Semua Media" if idn else "⭐ All Media Review Channel", url=None, data="channel_review")],
-        [_b("🔔 Channel Notifikasi" if idn else "🔔 Notification Channel", url=None, data="channel_notification")],
-        [_b("💳 Channel Transaksi" if idn else "💳 Transaction Channel", url=None, data="channel_transaction")],
-        [_b("📦 Kumpulkan Semua Code" if idn else "📦 Collect All Codes", "collect_all_codes")],
-        [_b("❓ Help", "help")],
-        [_b("⬅️ Kembali" if idn else "⬅️ Back", "home")],
-    ])
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _button(
+                    "⭐ Channel Review Semua Media"
+                    if idn
+                    else "⭐ All Media Review Channel",
+                    callback_data="channel_review",
+                )
+            ],
+            [
+                _button(
+                    "🔔 Channel Notifikasi"
+                    if idn
+                    else "🔔 Notification Channel",
+                    callback_data="channel_notification",
+                )
+            ],
+            [
+                _button(
+                    "💳 Channel Transaksi"
+                    if idn
+                    else "💳 Transaction Channel",
+                    callback_data="channel_transaction",
+                )
+            ],
+            [
+                _button(
+                    "📦 Kumpulkan Semua Code"
+                    if idn
+                    else "📦 Collect All Codes",
+                    callback_data="collect_all_codes",
+                )
+            ],
+            [
+                _button(
+                    "❓ Help",
+                    callback_data="help",
+                )
+            ],
+            [
+                _button(
+                    "⬅️ Kembali"
+                    if idn
+                    else "⬅️ Back",
+                    callback_data="home",
+                )
+            ],
+        ]
+    )
