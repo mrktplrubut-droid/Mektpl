@@ -33,6 +33,9 @@ router = Router()
 MEDIA_TTL = 3600
 PER_PAGE = 10
 
+# Anti spam tombol "Saya Sudah Bayar"
+VERIFY_REQUEST_TTL = 300
+
 SUCCESS_STATUSES = {
     "paid",
     "success",
@@ -82,26 +85,57 @@ def normalize_status(value) -> str:
     return str(value or "").strip().lower()
 
 
+def get_admin_ids() -> set[int]:
+    """
+    ADMIN_IDS aman jika:
+    - list/tuple/set: [123, 456]
+    - string: "123,456"
+    - satu ID: 123
+    """
+    try:
+        raw = ADMIN_IDS
+
+        if raw is None:
+            return set()
+
+        if isinstance(raw, str):
+            values = raw.replace(";", ",").split(",")
+
+        elif isinstance(raw, (list, tuple, set)):
+            values = raw
+
+        else:
+            values = [raw]
+
+        result = set()
+
+        for value in values:
+            value = str(value).strip()
+
+            if not value:
+                continue
+
+            try:
+                result.add(int(value))
+            except (ValueError, TypeError):
+                continue
+
+        return result
+
+    except Exception:
+        logger.exception("GET ADMIN IDS ERROR")
+        return set()
+
+
 def is_admin(user_id: int) -> bool:
     try:
-        admin_ids = {
-            int(x)
-            for x in ADMIN_IDS
-        }
-
-        return int(user_id) in admin_ids
-
+        return int(user_id) in get_admin_ids()
     except Exception:
         return False
 
 
 def clean_html(value) -> str:
-    """
-    Escape text sebelum dikirim dengan parse_mode=HTML.
-    """
-    return html.escape(
-        str(value or "")
-    )
+    return html.escape(str(value or ""))
 
 
 def safe_int(value, default=0) -> int:
@@ -109,6 +143,75 @@ def safe_int(value, default=0) -> int:
         return int(value)
     except Exception:
         return default
+
+
+def parse_media(media_data):
+    """
+    Normalize media JSON/list menjadi list dictionary.
+    """
+    if isinstance(media_data, str):
+        try:
+            media_data = json.loads(media_data)
+        except Exception:
+            logger.exception("MEDIA JSON PARSE ERROR")
+            return []
+
+    if not isinstance(media_data, list):
+        return []
+
+    result = []
+
+    for item in media_data:
+        if not isinstance(item, dict):
+            continue
+
+        message_id = item.get("message_id")
+
+        if not message_id:
+            continue
+
+        try:
+            message_id = int(message_id)
+        except (ValueError, TypeError):
+            continue
+
+        result.append({
+            **item,
+            "message_id": message_id,
+        })
+
+    return result
+
+
+async def get_file_by_code(code: str):
+    if not code:
+        return None
+
+    return await fetchrow(
+        """
+        SELECT *
+        FROM files
+        WHERE code=$1
+        LIMIT 1
+        """,
+        str(code).strip(),
+    )
+
+
+async def get_pending_purchase(user_id: int, code: str):
+    return await fetchrow(
+        """
+        SELECT *
+        FROM file_purchases
+        WHERE user_id=$1
+          AND file_code=$2
+          AND status='pending'
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        user_id,
+        code,
+    )
 
 
 # ============================================================
@@ -121,36 +224,32 @@ async def send_upgrade_notif(
     tier,
 ):
     try:
-        tier = str(
-            tier or ""
-        ).lower()
-
-        masked = mask_user_id(
-            user_id
-        )
+        tier = str(tier or "").lower()
+        masked = mask_user_id(user_id)
 
         if tier == "vip":
             text = (
                 "🌟 <b>VIP UPGRADE</b>\n\n"
                 f"👤 User: <code>{masked}</code>\n"
-                "📦 Paket: VIP"
+                "📦 Paket: <b>VIP</b>"
             )
 
         elif tier == "vvip":
             text = (
                 "👑 <b>VVIP UPGRADE</b>\n\n"
                 f"👤 User: <code>{masked}</code>\n"
-                "📦 Paket: VVIP"
+                "📦 Paket: <b>VVIP</b>"
             )
 
         else:
             return
 
-        await bot.send_message(
-            NOTIF_CHANNEL_ID,
-            text,
-            parse_mode="HTML",
-        )
+        if NOTIF_CHANNEL_ID:
+            await bot.send_message(
+                NOTIF_CHANNEL_ID,
+                text,
+                parse_mode="HTML",
+            )
 
     except Exception:
         logger.exception(
@@ -170,9 +269,7 @@ def manual_payment_keyboard(code):
             [
                 InlineKeyboardButton(
                     text="✅ Saya Sudah Bayar",
-                    callback_data=(
-                        f"manualcheck:{safe_code}"
-                    ),
+                    callback_data=f"manualcheck:{safe_code}",
                 )
             ],
             [
@@ -196,32 +293,22 @@ def media_keyboard(
 ):
     max_page = max(
         1,
-        (
-            total
-            + PER_PAGE
-            - 1
-        ) // PER_PAGE,
+        (total + PER_PAGE - 1) // PER_PAGE,
     )
 
     page = max(
         1,
-        min(
-            page,
-            max_page,
-        ),
+        min(page, max_page),
     )
 
     buttons = []
-
     nav = []
 
     if page > 1:
         nav.append(
             InlineKeyboardButton(
                 text="⬅️",
-                callback_data=(
-                    f"mp:{media_id}:{page - 1}"
-                ),
+                callback_data=f"mp:{media_id}:{page - 1}",
             )
         )
 
@@ -236,9 +323,7 @@ def media_keyboard(
         nav.append(
             InlineKeyboardButton(
                 text="➡️",
-                callback_data=(
-                    f"mp:{media_id}:{page + 1}"
-                ),
+                callback_data=f"mp:{media_id}:{page + 1}",
             )
         )
 
@@ -248,9 +333,7 @@ def media_keyboard(
         [
             InlineKeyboardButton(
                 text="📤 Kirim Halaman",
-                callback_data=(
-                    f"sp:{media_id}:{page}"
-                ),
+                callback_data=f"sp:{media_id}:{page}",
             )
         ]
     )
@@ -259,9 +342,7 @@ def media_keyboard(
         [
             InlineKeyboardButton(
                 text="📦 Kirim Semua",
-                callback_data=(
-                    f"sa:{media_id}"
-                ),
+                callback_data=f"sa:{media_id}",
             )
         ]
     )
@@ -281,10 +362,13 @@ def media_keyboard(
 async def choose_payment(
     call: CallbackQuery,
 ):
-    code = call.data.split(
-        ":",
-        1,
-    )[1].strip()
+    try:
+        code = call.data.split(":", 1)[1].strip()
+    except (AttributeError, IndexError):
+        return await call.answer(
+            "❌ Code tidak valid.",
+            show_alert=True,
+        )
 
     if not code:
         return await call.answer(
@@ -292,15 +376,7 @@ async def choose_payment(
             show_alert=True,
         )
 
-    file = await fetchrow(
-        """
-        SELECT *
-        FROM files
-        WHERE code=$1
-        LIMIT 1
-        """,
-        code,
-    )
+    file = await get_file_by_code(code)
 
     if not file:
         return await call.answer(
@@ -308,9 +384,7 @@ async def choose_payment(
             show_alert=True,
         )
 
-    price = safe_int(
-        file.get("price")
-    )
+    price = safe_int(file.get("price"))
 
     if price <= 0:
         return await call.answer(
@@ -318,8 +392,7 @@ async def choose_payment(
             show_alert=True,
         )
 
-    # Semua pembayaran diarahkan
-    # ke QR manual.
+    # SEMUA PAYMENT → QR MANUAL
     return await show_manual_payment(
         call,
         code,
@@ -337,10 +410,13 @@ async def choose_payment(
 async def manual_payment(
     call: CallbackQuery,
 ):
-    code = call.data.split(
-        ":",
-        1,
-    )[1].strip()
+    try:
+        code = call.data.split(":", 1)[1].strip()
+    except (AttributeError, IndexError):
+        return await call.answer(
+            "❌ Code tidak valid.",
+            show_alert=True,
+        )
 
     if not code:
         return await call.answer(
@@ -348,15 +424,7 @@ async def manual_payment(
             show_alert=True,
         )
 
-    file = await fetchrow(
-        """
-        SELECT *
-        FROM files
-        WHERE code=$1
-        LIMIT 1
-        """,
-        code,
-    )
+    file = await get_file_by_code(code)
 
     if not file:
         return await call.answer(
@@ -364,9 +432,7 @@ async def manual_payment(
             show_alert=True,
         )
 
-    price = safe_int(
-        file.get("price")
-    )
+    price = safe_int(file.get("price"))
 
     if price <= 0:
         return await call.answer(
@@ -390,9 +456,7 @@ async def show_manual_payment(
     code: str,
     file,
 ):
-    user_id = int(
-        call.from_user.id
-    )
+    user_id = int(call.from_user.id)
 
     # --------------------------------------------------------
     # QR VALIDATION
@@ -409,12 +473,10 @@ async def show_manual_payment(
         )
 
     # --------------------------------------------------------
-    # FILE PRICE
+    # PRICE
     # --------------------------------------------------------
 
-    price = safe_int(
-        file.get("price")
-    )
+    price = safe_int(file.get("price"))
 
     if price <= 0:
         return await call.answer(
@@ -423,7 +485,7 @@ async def show_manual_payment(
         )
 
     # --------------------------------------------------------
-    # CHECK ALREADY PAID
+    # ALREADY PAID
     # --------------------------------------------------------
 
     paid = await fetchrow(
@@ -447,19 +509,10 @@ async def show_manual_payment(
         )
 
     # --------------------------------------------------------
-    # CHECK PENDING
+    # EXISTING PENDING
     # --------------------------------------------------------
 
-    existing = await fetchrow(
-        """
-        SELECT *
-        FROM file_purchases
-        WHERE user_id=$1
-          AND file_code=$2
-          AND status='pending'
-        ORDER BY id DESC
-        LIMIT 1
-        """,
+    existing = await get_pending_purchase(
         user_id,
         code,
     )
@@ -527,13 +580,8 @@ async def show_manual_payment(
     # CAPTION
     # --------------------------------------------------------
 
-    title = clean_html(
-        file.get("title")
-    )
-
-    safe_code = clean_html(
-        code
-    )
+    title = clean_html(file.get("title"))
+    safe_code = clean_html(code)
 
     caption = (
         "📷 <b>PEMBAYARAN MANUAL</b>\n\n"
@@ -548,8 +596,7 @@ async def show_manual_payment(
         "1️⃣ Scan QR di atas\n"
         "2️⃣ Bayar sesuai nominal\n"
         "3️⃣ Pastikan pembayaran berhasil\n"
-        "4️⃣ Tekan tombol "
-        "<b>✅ Saya Sudah Bayar</b>\n\n"
+        "4️⃣ Tekan tombol <b>✅ Saya Sudah Bayar</b>\n\n"
         "⏳ Pembayaran akan diverifikasi admin."
     )
 
@@ -559,12 +606,10 @@ async def show_manual_payment(
 
     try:
         msg = await call.message.answer_photo(
-            MANUAL_QR_FILE_ID,
+            photo=MANUAL_QR_FILE_ID,
             caption=caption,
             parse_mode="HTML",
-            reply_markup=manual_payment_keyboard(
-                code
-            ),
+            reply_markup=manual_payment_keyboard(code),
         )
 
         await execute(
@@ -605,14 +650,15 @@ async def show_manual_payment(
 async def manual_check(
     call: CallbackQuery,
 ):
-    code = call.data.split(
-        ":",
-        1,
-    )[1].strip()
+    try:
+        code = call.data.split(":", 1)[1].strip()
+    except (AttributeError, IndexError):
+        return await call.answer(
+            "❌ Code tidak valid.",
+            show_alert=True,
+        )
 
-    user_id = int(
-        call.from_user.id
-    )
+    user_id = int(call.from_user.id)
 
     if not code:
         return await call.answer(
@@ -624,15 +670,7 @@ async def manual_check(
     # FILE
     # --------------------------------------------------------
 
-    file = await fetchrow(
-        """
-        SELECT *
-        FROM files
-        WHERE code=$1
-        LIMIT 1
-        """,
-        code,
-    )
+    file = await get_file_by_code(code)
 
     if not file:
         return await call.answer(
@@ -641,52 +679,94 @@ async def manual_check(
         )
 
     # --------------------------------------------------------
-    # PURCHASE MILIK USER
+    # PURCHASE
     # --------------------------------------------------------
 
-    purchase = await fetchrow(
-        """
-        SELECT *
-        FROM file_purchases
-        WHERE user_id=$1
-          AND file_code=$2
-          AND status='pending'
-        ORDER BY id DESC
-        LIMIT 1
-        """,
+    purchase = await get_pending_purchase(
         user_id,
         code,
     )
 
     if not purchase:
+        paid = await fetchrow(
+            """
+            SELECT id
+            FROM file_purchases
+            WHERE user_id=$1
+              AND file_code=$2
+              AND status='paid'
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            user_id,
+            code,
+        )
+
+        if paid:
+            return await call.answer(
+                "✅ Pembayaran sudah diverifikasi.",
+                show_alert=True,
+            )
+
         return await call.answer(
             "❌ Transaksi tidak ditemukan.",
             show_alert=True,
         )
 
+    purchase_id = int(purchase["id"])
+
     # --------------------------------------------------------
-    # PREVENT DUPLICATE ADMIN REQUEST
-    #
-    # Menghindari user menekan tombol berkali-kali
-    # dan mengirim spam ke semua admin.
+    # ANTI DUPLICATE ADMIN REQUEST
     # --------------------------------------------------------
+
+    lock_key = (
+        f"manualverify:"
+        f"{purchase_id}"
+    )
+
+    try:
+        verification_lock = await safe_get(
+            lock_key
+        )
+
+        if verification_lock:
+            return await call.answer(
+                "⏳ Permintaan verifikasi sudah dikirim.\n"
+                "Mohon tunggu admin.",
+                show_alert=True,
+            )
+
+        await safe_set(
+            lock_key,
+            {
+                "purchase_id": purchase_id,
+                "user_id": user_id,
+            },
+            ex=VERIFY_REQUEST_TTL,
+        )
+
+    except Exception:
+        logger.warning(
+            "VERIFY REDIS LOCK ERROR",
+            exc_info=True,
+        )
 
     await call.answer(
         "⏳ Mengirim permintaan verifikasi..."
     )
 
+    # --------------------------------------------------------
+    # ADMIN MESSAGE
+    # --------------------------------------------------------
+
     text = (
         "📥 <b>MANUAL PAYMENT CHECK</b>\n\n"
-        f"👤 User: "
-        f"<code>{user_id}</code>\n"
-        f"📄 File: "
-        f"<b>{clean_html(file.get('title'))}</b>\n"
-        f"🔑 Code: "
-        f"<code>{clean_html(code)}</code>\n"
+        f"👤 User: <code>{user_id}</code>\n"
+        f"📄 File: <b>{clean_html(file.get('title'))}</b>\n"
+        f"🔑 Code: <code>{clean_html(code)}</code>\n"
         f"💰 Harga: "
         f"<b>{format_rupiah(purchase.get('paid_price'))}</b>\n"
-        f"🧾 ID: "
-        f"<code>{purchase['id']}</code>\n"
+        f"🧾 ID: <code>{purchase_id}</code>\n"
         f"💳 Payment: "
         f"<code>{clean_html(purchase.get('payment_id'))}</code>"
     )
@@ -696,26 +776,23 @@ async def manual_check(
             [
                 InlineKeyboardButton(
                     text="✅ Approve",
-                    callback_data=(
-                        f"approve:{purchase['id']}"
-                    ),
+                    callback_data=f"approve:{purchase_id}",
                 ),
                 InlineKeyboardButton(
                     text="❌ Reject",
-                    callback_data=(
-                        f"reject:{purchase['id']}"
-                    ),
+                    callback_data=f"reject:{purchase_id}",
                 ),
             ]
         ]
     )
 
+    admin_ids = get_admin_ids()
     sent = 0
 
-    for admin in ADMIN_IDS:
+    for admin_id in admin_ids:
         try:
             await call.bot.send_message(
-                int(admin),
+                admin_id,
                 text,
                 parse_mode="HTML",
                 reply_markup=keyboard,
@@ -726,10 +803,20 @@ async def manual_check(
         except Exception:
             logger.exception(
                 "SEND MANUAL ADMIN ERROR | admin=%s",
-                admin,
+                admin_id,
             )
 
     if sent == 0:
+        # Hapus lock supaya user bisa mencoba lagi
+        try:
+            await safe_set(
+                lock_key,
+                None,
+                ex=1,
+            )
+        except Exception:
+            pass
+
         return await call.message.answer(
             "❌ Admin tidak dapat menerima permintaan."
         )
@@ -737,7 +824,7 @@ async def manual_check(
     try:
         await call.message.answer(
             "✅ Permintaan pembayaran sudah dikirim "
-            "ke admin.\n"
+            "ke admin.\n\n"
             "⏳ Tunggu sampai pembayaran diverifikasi."
         )
 
@@ -758,47 +845,16 @@ async def finish_payment(
     invoice,
     message,
 ):
-    purchase_id = purchase["id"]
+    purchase_id = int(purchase["id"])
 
     try:
         # ----------------------------------------------------
-        # PARSE MEDIA
+        # MEDIA
         # ----------------------------------------------------
 
-        media_data = file.get(
-            "media"
+        media_list = parse_media(
+            file.get("media")
         )
-
-        if isinstance(
-            media_data,
-            str,
-        ):
-            try:
-                media_list = json.loads(
-                    media_data
-                )
-
-            except Exception:
-                logger.exception(
-                    "MEDIA JSON PARSE ERROR"
-                )
-                media_list = []
-
-        elif isinstance(
-            media_data,
-            list,
-        ):
-            media_list = media_data
-
-        else:
-            media_list = []
-
-        media_list = [
-            item
-            for item in media_list
-            if isinstance(item, dict)
-            and item.get("message_id")
-        ]
 
         if not media_list:
             await message.answer(
@@ -840,9 +896,7 @@ async def finish_payment(
         # MEDIA SESSION
         # ----------------------------------------------------
 
-        media_id = secrets.token_hex(
-            16
-        )
+        media_id = secrets.token_hex(16)
 
         session_data = {
             "user_id": int(
@@ -850,10 +904,7 @@ async def finish_payment(
             ),
             "media": media_list,
             "share_media": bool(
-                file.get(
-                    "share_media",
-                    False,
-                )
+                file.get("share_media", False)
             ),
             "invoice": invoice,
             "purchase_id": purchase_id,
@@ -885,15 +936,9 @@ async def finish_payment(
                 UPDATE files
                 SET
                     buy_count =
-                        COALESCE(
-                            buy_count,
-                            0
-                        ) + 1,
+                        COALESCE(buy_count, 0) + 1,
                     sold =
-                        COALESCE(
-                            sold,
-                            0
-                        ) + 1
+                        COALESCE(sold, 0) + 1
                 WHERE code=$1
                 """,
                 file["code"],
@@ -905,10 +950,7 @@ async def finish_payment(
             )
 
         # ----------------------------------------------------
-        # FREE PROGRESS
-        #
-        # FIX:
-        # Progress harus milik user yang melakukan pembelian.
+        # FREE CODE PROGRESS
         # ----------------------------------------------------
 
         try:
@@ -962,9 +1004,7 @@ async def finish_payment(
             )
 
             for row in completed_rows:
-
                 if row["completed"]:
-
                     try:
                         await bot.send_message(
                             row["user_id"],
@@ -1011,15 +1051,9 @@ async def finish_payment(
                     UPDATE users
                     SET
                         balance =
-                            COALESCE(
-                                balance,
-                                0
-                            ) + $1,
+                            COALESCE(balance, 0) + $1,
                         total_earn =
-                            COALESCE(
-                                total_earn,
-                                0
-                            ) + $1
+                            COALESCE(total_earn, 0) + $1
                     WHERE chat_id=$2
                     """,
                     income,
@@ -1041,10 +1075,7 @@ async def finish_payment(
                     owner_id,
                     "file_sale",
                     income,
-                    (
-                        f"Pendapatan file "
-                        f"{file['code']}"
-                    ),
+                    f"Pendapatan file {file['code']}",
                 )
 
         except Exception:
@@ -1054,7 +1085,7 @@ async def finish_payment(
             )
 
         # ----------------------------------------------------
-        # VIP / VVIP
+        # VIP / VVIP NOTIFICATION
         # ----------------------------------------------------
 
         try:
@@ -1086,39 +1117,39 @@ async def finish_payment(
         # ----------------------------------------------------
 
         try:
-            masked = mask_user_id(
-                purchase["user_id"]
-            )
+            if NOTIF_CHANNEL_ID:
+                masked = mask_user_id(
+                    purchase["user_id"]
+                )
 
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text="🛒 Buy Now",
-                            url=(
-                                "https://t.me/"
-                                "mktplbot"
-                                f"?start={file['code']}"
-                            ),
-                        )
+                keyboard = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text="🛒 Buy Now",
+                                url=(
+                                    "https://t.me/mktplbot"
+                                    f"?start={file['code']}"
+                                ),
+                            )
+                        ]
                     ]
-                ]
-            )
+                )
 
-            await bot.send_message(
-                NOTIF_CHANNEL_ID,
-                (
-                    "💸 <b>FILE PAYMENT SUCCESS</b>\n\n"
-                    f"📄 Judul: "
-                    f"<b>{clean_html(file.get('title'))}</b>\n"
-                    f"📁 Code: "
-                    f"<code>{clean_html(file.get('code'))}</code>\n"
-                    f"👤 User: "
-                    f"<code>{masked}</code>"
-                ),
-                parse_mode="HTML",
-                reply_markup=keyboard,
-            )
+                await bot.send_message(
+                    NOTIF_CHANNEL_ID,
+                    (
+                        "💸 <b>FILE PAYMENT SUCCESS</b>\n\n"
+                        f"📄 Judul: "
+                        f"<b>{clean_html(file.get('title'))}</b>\n"
+                        f"📁 Code: "
+                        f"<code>{clean_html(file.get('code'))}</code>\n"
+                        f"👤 User: "
+                        f"<code>{masked}</code>"
+                    ),
+                    parse_mode="HTML",
+                    reply_markup=keyboard,
+                )
 
         except Exception:
             logger.exception(
@@ -1127,8 +1158,6 @@ async def finish_payment(
 
         # ----------------------------------------------------
         # DELETE QR
-        #
-        # QR gagal dihapus tidak boleh membatalkan payment.
         # ----------------------------------------------------
 
         try:
@@ -1142,8 +1171,8 @@ async def finish_payment(
 
             if qr_message_id and qr_chat_id:
                 await bot.delete_message(
-                    chat_id=qr_chat_id,
-                    message_id=qr_message_id,
+                    chat_id=int(qr_chat_id),
+                    message_id=int(qr_message_id),
                 )
 
         except Exception:
@@ -1157,15 +1186,12 @@ async def finish_payment(
         # SEND MEDIA MENU
         # ----------------------------------------------------
 
-        total = len(
-            media_list
-        )
+        total = len(media_list)
 
         await message.answer(
             (
                 "🎉 <b>Pembayaran berhasil!</b>\n\n"
-                f"📦 Total File: "
-                f"<b>{total}</b>\n\n"
+                f"📦 Total File: <b>{total}</b>\n\n"
                 "Silakan pilih pengiriman:"
             ),
             parse_mode="HTML",
@@ -1177,10 +1203,7 @@ async def finish_payment(
         )
 
         logger.info(
-            "PAYMENT FINISHED | "
-            "purchase=%s | "
-            "user=%s | "
-            "code=%s",
+            "PAYMENT FINISHED | purchase=%s | user=%s | code=%s",
             purchase_id,
             purchase["user_id"],
             file["code"],
@@ -1208,9 +1231,7 @@ async def approve_manual(
     call: CallbackQuery,
     state: FSMContext,
 ):
-    if not is_admin(
-        call.from_user.id
-    ):
+    if not is_admin(call.from_user.id):
         return await call.answer(
             "❌ Kamu bukan admin.",
             show_alert=True,
@@ -1220,16 +1241,10 @@ async def approve_manual(
 
     try:
         purchase_id = int(
-            call.data.split(
-                ":",
-                1,
-            )[1]
+            call.data.split(":", 1)[1]
         )
 
-    except (
-        ValueError,
-        IndexError,
-    ):
+    except (ValueError, IndexError):
         return await call.answer(
             "❌ ID transaksi tidak valid.",
             show_alert=True,
@@ -1252,14 +1267,8 @@ async def approve_manual(
             show_alert=True,
         )
 
-    file = await fetchrow(
-        """
-        SELECT *
-        FROM files
-        WHERE code=$1
-        LIMIT 1
-        """,
-        purchase["file_code"],
+    file = await get_file_by_code(
+        purchase["file_code"]
     )
 
     if not file:
@@ -1277,7 +1286,7 @@ async def approve_manual(
     )
 
     # --------------------------------------------------------
-    # USER PROCESSING MESSAGE
+    # USER PROCESSING
     # --------------------------------------------------------
 
     try:
@@ -1322,8 +1331,7 @@ async def approve_manual(
         await call.message.edit_text(
             (
                 "✅ <b>PEMBAYARAN DISETUJUI</b>\n\n"
-                f"👤 User: "
-                f"<code>{user_id}</code>\n"
+                f"👤 User: <code>{user_id}</code>\n"
                 f"📦 File: "
                 f"<b>{clean_html(file.get('title'))}</b>\n"
                 f"🔑 Code: "
@@ -1353,9 +1361,7 @@ async def reject_manual(
     call: CallbackQuery,
     state: FSMContext,
 ):
-    if not is_admin(
-        call.from_user.id
-    ):
+    if not is_admin(call.from_user.id):
         return await call.answer(
             "❌ Kamu bukan admin.",
             show_alert=True,
@@ -1363,16 +1369,10 @@ async def reject_manual(
 
     try:
         purchase_id = int(
-            call.data.split(
-                ":",
-                1,
-            )[1]
+            call.data.split(":", 1)[1]
         )
 
-    except (
-        ValueError,
-        IndexError,
-    ):
+    except (ValueError, IndexError):
         return await call.answer(
             "❌ ID transaksi tidak valid.",
             show_alert=True,
@@ -1395,28 +1395,15 @@ async def reject_manual(
             show_alert=True,
         )
 
-    # --------------------------------------------------------
-    # SAVE ADMIN + PURCHASE
-    #
-    # FIX:
-    # Reason harus terikat ke admin yang menekan Reject.
-    # --------------------------------------------------------
-
     await state.set_state(
         RejectPaymentState.waiting_reason
     )
 
     await state.update_data(
         purchase_id=purchase_id,
-        admin_id=int(
-            call.from_user.id
-        ),
-        admin_chat_id=int(
-            call.message.chat.id
-        ),
-        admin_message_id=int(
-            call.message.message_id
-        ),
+        admin_id=int(call.from_user.id),
+        admin_chat_id=int(call.message.chat.id),
+        admin_message_id=int(call.message.message_id),
     )
 
     try:
@@ -1459,9 +1446,6 @@ async def reject_manual(
 
 # ============================================================
 # CANCEL REJECT
-#
-# PENTING:
-# Handler ini diletakkan SEBELUM handler reason.
 # ============================================================
 
 @router.message(
@@ -1472,16 +1456,11 @@ async def cancel_reject_reason(
     message: Message,
     state: FSMContext,
 ):
-    if not is_admin(
-        message.from_user.id
-    ):
+    if not is_admin(message.from_user.id):
         return
 
     data = await state.get_data()
-
-    purchase_id = data.get(
-        "purchase_id"
-    )
+    purchase_id = data.get("purchase_id")
 
     await state.clear()
 
@@ -1489,8 +1468,7 @@ async def cancel_reject_reason(
         (
             "↩️ <b>Reject dibatalkan.</b>\n\n"
             + (
-                f"🧾 Transaksi "
-                f"<code>{purchase_id}</code> "
+                f"🧾 Transaksi <code>{purchase_id}</code> "
                 "masih berstatus <b>pending</b>."
                 if purchase_id
                 else
@@ -1502,7 +1480,7 @@ async def cancel_reject_reason(
 
 
 # ============================================================
-# ADMIN SEND REJECT REASON
+# RECEIVE REJECT REASON
 # ============================================================
 
 @router.message(
@@ -1513,20 +1491,10 @@ async def receive_reject_reason(
     message: Message,
     state: FSMContext,
 ):
-    # --------------------------------------------------------
-    # ADMIN CHECK
-    # --------------------------------------------------------
-
-    if not is_admin(
-        message.from_user.id
-    ):
+    if not is_admin(message.from_user.id):
         return await message.answer(
             "❌ Kamu bukan admin."
         )
-
-    # --------------------------------------------------------
-    # GET STATE
-    # --------------------------------------------------------
 
     data = await state.get_data()
 
@@ -1537,9 +1505,6 @@ async def receive_reject_reason(
     admin_id = data.get(
         "admin_id"
     )
-
-    # Pastikan alasan dikirim oleh admin
-    # yang menekan tombol Reject.
 
     if (
         admin_id
@@ -1557,10 +1522,6 @@ async def receive_reject_reason(
             "❌ Data transaksi tidak ditemukan.\n"
             "Silakan ulangi proses Reject."
         )
-
-    # --------------------------------------------------------
-    # VALIDATE REASON
-    # --------------------------------------------------------
 
     reason = str(
         message.text or ""
@@ -1605,13 +1566,8 @@ async def receive_reject_reason(
         rejected["user_id"]
     )
 
-    code = rejected[
-        "file_code"
-    ]
-
-    safe_reason = clean_html(
-        reason
-    )
+    code = rejected["file_code"]
+    safe_reason = clean_html(reason)
 
     # --------------------------------------------------------
     # NOTIFY USER
@@ -1624,8 +1580,7 @@ async def receive_reject_reason(
             user_id,
             (
                 "❌ <b>Pembayaran Ditolak</b>\n\n"
-                f"📦 Code: "
-                f"<code>{clean_html(code)}</code>\n\n"
+                f"📦 Code: <code>{clean_html(code)}</code>\n\n"
                 "📝 <b>Alasan Admin:</b>\n"
                 f"{safe_reason}\n\n"
                 "💡 Silakan lakukan pembayaran ulang "
@@ -1659,13 +1614,10 @@ async def receive_reject_reason(
             "qr_chat_id"
         )
 
-        if (
-            qr_message_id
-            and qr_chat_id
-        ):
+        if qr_message_id and qr_chat_id:
             await message.bot.delete_message(
-                chat_id=qr_chat_id,
-                message_id=qr_message_id,
+                chat_id=int(qr_chat_id),
+                message_id=int(qr_message_id),
             )
 
             qr_deleted = True
@@ -1695,16 +1647,13 @@ async def receive_reject_reason(
     ):
         try:
             await message.bot.edit_message_text(
-                chat_id=original_chat_id,
-                message_id=original_message_id,
+                chat_id=int(original_chat_id),
+                message_id=int(original_message_id),
                 text=(
                     "❌ <b>PEMBAYARAN DITOLAK</b>\n\n"
-                    f"🧾 ID: "
-                    f"<code>{purchase_id}</code>\n"
-                    f"👤 User: "
-                    f"<code>{user_id}</code>\n"
-                    f"📦 Code: "
-                    f"<code>{clean_html(code)}</code>\n\n"
+                    f"🧾 ID: <code>{purchase_id}</code>\n"
+                    f"👤 User: <code>{user_id}</code>\n"
+                    f"📦 Code: <code>{clean_html(code)}</code>\n\n"
                     "📝 <b>Alasan:</b>\n"
                     f"{safe_reason}"
                 ),
@@ -1726,12 +1675,9 @@ async def receive_reject_reason(
         await message.answer(
             (
                 "❌ <b>PEMBAYARAN DITOLAK</b>\n\n"
-                f"🧾 ID: "
-                f"<code>{purchase_id}</code>\n"
-                f"👤 User: "
-                f"<code>{user_id}</code>\n"
-                f"📦 Code: "
-                f"<code>{clean_html(code)}</code>\n\n"
+                f"🧾 ID: <code>{purchase_id}</code>\n"
+                f"👤 User: <code>{user_id}</code>\n"
+                f"📦 Code: <code>{clean_html(code)}</code>\n\n"
                 "📝 <b>Alasan:</b>\n"
                 f"{safe_reason}\n\n"
                 f"👤 User diberi notifikasi: "
@@ -1746,10 +1692,6 @@ async def receive_reject_reason(
         logger.exception(
             "SEND ADMIN REJECT RESULT ERROR"
         )
-
-    # --------------------------------------------------------
-    # CLEAR FSM
-    # --------------------------------------------------------
 
     await state.clear()
 
@@ -1769,7 +1711,6 @@ async def close_payment(
 
     try:
         await call.message.delete()
-
     except Exception:
         pass
 
@@ -1804,6 +1745,13 @@ async def get_owned_media_session(
         )
         return None
 
+    if not isinstance(data, dict):
+        await call.answer(
+            "❌ Data session tidak valid.",
+            show_alert=True,
+        )
+        return None
+
     session_user_id = data.get(
         "user_id"
     )
@@ -1826,14 +1774,12 @@ async def get_owned_media_session(
             int(session_user_id)
             == int(call.from_user.id)
         )
-
     except Exception:
         authorized = False
 
     if not authorized:
         logger.warning(
-            "UNAUTHORIZED MEDIA ACCESS | "
-            "media=%s | user=%s",
+            "UNAUTHORIZED MEDIA ACCESS | media=%s | user=%s",
             media_id,
             call.from_user.id,
         )
@@ -1859,18 +1805,15 @@ async def send_page_media(
     call: CallbackQuery,
 ):
     try:
-        _, media_id, page_raw = (
-            call.data.split(":")
-        )
+        parts = call.data.split(":")
 
-        page = int(
-            page_raw
-        )
+        if len(parts) != 3:
+            raise ValueError
 
-    except (
-        ValueError,
-        AttributeError,
-    ):
+        _, media_id, page_raw = parts
+        page = int(page_raw)
+
+    except (ValueError, TypeError, AttributeError):
         return await call.answer(
             "❌ Data halaman tidak valid.",
             show_alert=True,
@@ -1895,26 +1838,23 @@ async def send_page_media(
         [],
     )
 
-    if not isinstance(
-        media_list,
-        list,
-    ):
+    if not isinstance(media_list, list):
         return await call.answer(
             "❌ Data media tidak valid.",
             show_alert=True,
         )
 
-    total = len(
-        media_list
-    )
+    total = len(media_list)
+
+    if total <= 0:
+        return await call.answer(
+            "❌ Media kosong.",
+            show_alert=True,
+        )
 
     max_page = max(
         1,
-        (
-            total
-            + PER_PAGE
-            - 1
-        ) // PER_PAGE,
+        (total + PER_PAGE - 1) // PER_PAGE,
     )
 
     if page > max_page:
@@ -1923,18 +1863,10 @@ async def send_page_media(
             show_alert=True,
         )
 
-    start = (
-        page - 1
-    ) * PER_PAGE
+    start = (page - 1) * PER_PAGE
+    end = start + PER_PAGE
 
-    end = (
-        start
-        + PER_PAGE
-    )
-
-    items = media_list[
-        start:end
-    ]
+    items = media_list[start:end]
 
     if not items:
         return await call.answer(
@@ -1960,9 +1892,7 @@ async def send_page_media(
             await call.bot.copy_message(
                 chat_id=call.from_user.id,
                 from_chat_id=STORAGE_CHANNEL_ID,
-                message_id=int(
-                    message_id
-                ),
+                message_id=int(message_id),
             )
 
             sent += 1
@@ -2000,11 +1930,14 @@ async def send_all_media(
     call: CallbackQuery,
 ):
     try:
-        _, media_id = (
-            call.data.split(":")
-        )
+        parts = call.data.split(":")
 
-    except ValueError:
+        if len(parts) != 2:
+            raise ValueError
+
+        _, media_id = parts
+
+    except (ValueError, TypeError, AttributeError):
         return await call.answer(
             "❌ Session tidak valid.",
             show_alert=True,
@@ -2023,10 +1956,10 @@ async def send_all_media(
         [],
     )
 
-    if not isinstance(
-        media_list,
-        list,
-    ) or not media_list:
+    if (
+        not isinstance(media_list, list)
+        or not media_list
+    ):
         return await call.answer(
             "❌ Media kosong.",
             show_alert=True,
@@ -2036,15 +1969,13 @@ async def send_all_media(
         "📦 Mengirim semua file..."
     )
 
+    total = len(media_list)
+
     progress = await call.message.answer(
-        f"⏳ Mengirim 0/{len(media_list)}"
+        f"⏳ Mengirim 0/{total}"
     )
 
     sent = 0
-
-    total = len(
-        media_list
-    )
 
     for index, item in enumerate(
         media_list,
@@ -2061,22 +1992,16 @@ async def send_all_media(
             await call.bot.copy_message(
                 chat_id=call.from_user.id,
                 from_chat_id=STORAGE_CHANNEL_ID,
-                message_id=int(
-                    message_id
-                ),
+                message_id=int(message_id),
             )
 
             sent += 1
 
-            if index % 5 == 0:
+            if index % 5 == 0 or index == total:
                 try:
                     await progress.edit_text(
-                        (
-                            f"⏳ Mengirim "
-                            f"{index}/{total}"
-                        )
+                        f"⏳ Mengirim {index}/{total}"
                     )
-
                 except Exception:
                     pass
 
@@ -2091,8 +2016,7 @@ async def send_all_media(
         await progress.edit_text(
             (
                 "✅ Semua file selesai\n\n"
-                f"📦 Berhasil: "
-                f"{sent}/{total}"
+                f"📦 Berhasil: {sent}/{total}"
             )
         )
 
@@ -2111,18 +2035,15 @@ async def media_page(
     call: CallbackQuery,
 ):
     try:
-        _, media_id, page_raw = (
-            call.data.split(":")
-        )
+        parts = call.data.split(":")
 
-        page = int(
-            page_raw
-        )
+        if len(parts) != 3:
+            raise ValueError
 
-    except (
-        ValueError,
-        AttributeError,
-    ):
+        _, media_id, page_raw = parts
+        page = int(page_raw)
+
+    except (ValueError, TypeError, AttributeError):
         return await call.answer(
             "❌ Data halaman tidak valid.",
             show_alert=True,
@@ -2141,32 +2062,23 @@ async def media_page(
         [],
     )
 
-    if not isinstance(
-        media_list,
-        list,
-    ) or not media_list:
+    if (
+        not isinstance(media_list, list)
+        or not media_list
+    ):
         return await call.answer(
             "❌ Media tidak ditemukan.",
             show_alert=True,
         )
 
-    total = len(
-        media_list
-    )
+    total = len(media_list)
 
     max_page = max(
         1,
-        (
-            total
-            + PER_PAGE
-            - 1
-        ) // PER_PAGE,
+        (total + PER_PAGE - 1) // PER_PAGE,
     )
 
-    if (
-        page < 1
-        or page > max_page
-    ):
+    if page < 1 or page > max_page:
         return await call.answer(
             "❌ Halaman tidak valid.",
             show_alert=True,
@@ -2182,8 +2094,9 @@ async def media_page(
         )
 
     except Exception:
-        logger.exception(
-            "MEDIA PAGINATION ERROR"
+        logger.warning(
+            "MEDIA PAGINATION ERROR",
+            exc_info=True,
         )
 
     await call.answer()
