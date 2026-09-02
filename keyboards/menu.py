@@ -1,3 +1,4 @@
+from __future__ import annotations
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 def _button(
     text: str,
@@ -36,19 +37,17 @@ def home_kb(
                     callback_data="marketplace",
                 ),
                 _button(
-                    "👤 Account" if idn else "👤 Account",
+                    "👤 Akun" if idn else "👤 Account",
                     callback_data="account",
                 ),
             ],
             [
                 _button(
-                    "📂 Menu Lainnya"
-                    if idn
-                    else "📂 More Menu",
+                    "📂 Menu Lainnya" if idn else "📂 More Menu",
                     callback_data="menu_lainnya",
                 ),
                 _button(
-                    "❓ Help",
+                    "❓ Bantuan" if idn else "❓ Help",
                     callback_data="help",
                 ),
             ],
@@ -65,17 +64,13 @@ def account_kb(
     rows = [
         [
             _button(
-                "⚙️ Pengaturan"
-                if idn
-                else "⚙️ Settings",
+                "⚙️ Pengaturan" if idn else "⚙️ Settings",
                 callback_data="account_settings",
             )
         ],
         [
             _button(
-                "🎨 Kreator"
-                if idn
-                else "🎨 Creator",
+                "🎨 Kreator" if idn else "🎨 Creator",
                 callback_data="creator",
             ),
             _button(
@@ -88,9 +83,7 @@ def account_kb(
         rows.append(
             [
                 _button(
-                    "💸 Withdraw"
-                    if idn
-                    else "💸 Withdraw",
+                    "💸 Withdraw",
                     callback_data="withdraw",
                 )
             ]
@@ -98,9 +91,7 @@ def account_kb(
     rows.append(
         [
             _button(
-                "⬅️ Kembali"
-                if idn
-                else "⬅️ Back",
+                "⬅️ Kembali" if idn else "⬅️ Back",
                 callback_data="home",
             )
         ]
@@ -127,17 +118,13 @@ def settings_kb(
             ],
             [
                 _button(
-                    "🌐 Bahasa"
-                    if idn
-                    else "🌐 Language",
+                    "🌐 Bahasa" if idn else "🌐 Language",
                     callback_data="change_language",
                 )
             ],
             [
                 _button(
-                    "⬅️ Account"
-                    if idn
-                    else "⬅️ Account",
+                    "⬅️ Account",
                     callback_data="account",
                 )
             ],
@@ -186,15 +173,13 @@ def other_menu_kb(
             ],
             [
                 _button(
-                    "❓ Help",
+                    "❓ Bantuan" if idn else "❓ Help",
                     callback_data="help",
                 )
             ],
             [
                 _button(
-                    "⬅️ Kembali"
-                    if idn
-                    else "⬅️ Back",
+                    "⬅️ Kembali" if idn else "⬅️ Back",
                     callback_data="home",
                 )
             ],
