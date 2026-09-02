@@ -4,6 +4,7 @@ from config import BOT_TOKEN
 from middlewares.ban import BanMiddleware
 from middlewares.maintenance import MaintenanceMiddleware
 from middlewares.ratelimit import RateLimitMiddleware
+from middlewares.loading import CallbackLoadingMiddleware
 # =========================
 # BOT INIT
 # =========================
@@ -32,6 +33,11 @@ dp.callback_query.middleware(
 # Conservative anti-spam guard for accidental rapid-fire events.
 dp.callback_query.middleware(
     RateLimitMiddleware()
+)
+# Immediate visual feedback for every inline button/callback.
+# Individual handlers may still answer later with success/error text.
+dp.callback_query.middleware(
+    CallbackLoadingMiddleware()
 )
 # =========================
 # ROUTERS IMPORT
