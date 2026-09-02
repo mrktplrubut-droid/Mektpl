@@ -3,24 +3,34 @@ import base64
 import binascii
 import qrcode
 from io import BytesIO
+from typing import Set
+
 from aiogram import Router, F
 from aiogram.types import (
     CallbackQuery,
     BufferedInputFile,
 )
+
 from database import fetchrow, execute
 from utils.cashi import Cashi
+
 from .pay import (
     finish_payment,
-    CHECK_LOCK,
     SUCCESS_STATUSES,
     FAILED_STATUSES,
     normalize_status,
     format_rupiah,
     payment_check_keyboard,
 )
+
 logger = logging.getLogger(__name__)
+
 router = Router()
+
+# ============================================================
+# CASHI PAYMENT CHECK LOCK
+# ============================================================
+CHECK_LOCK: Set[str] = set()
 # ============================================================
 # KEYBOARD
 # ============================================================
