@@ -13,7 +13,10 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramForbiddenError,
+)
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.fsm.context import FSMContext
 from database import get_pool
@@ -36,9 +39,6 @@ def rupiah(value: int | float) -> str:
 def safe_html(value) -> str:
     return html.escape(str(value or ""))
 def parse_int(value: str) -> Optional[int]:
-    """
-    Parse angka dari callback_data dengan aman.
-    """
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -49,12 +49,6 @@ async def safe_callback_answer(
     *,
     show_alert: bool = False,
 ) -> bool:
-    """
-    Jawab callback dengan aman.
-    Penting:
-    Callback Telegram harus di-ACK secepat mungkin.
-    Error callback expired / invalid tidak boleh membuat bot crash.
-    """
     try:
         await call.answer(
             text=text,
@@ -85,7 +79,11 @@ async def safe_callback_answer(
             "Unexpected VIP callback answer error"
         )
         return False
-async def safe_delete_message(message: Message) -> None:
+async def safe_delete_message(
+    message: Message | None,
+) -> None:
+    if not message:
+        return
     try:
         await message.delete()
     except (
@@ -130,7 +128,11 @@ async def safe_send_message(
 def build_vvip(
     lang: str = DEFAULT_LANGUAGE,
 ):
-    lang = lang if lang in ("id", "en") else DEFAULT_LANGUAGE
+    lang = (
+        lang
+        if lang in ("id", "en")
+        else DEFAULT_LANGUAGE
+    )
     kb = InlineKeyboardBuilder()
     for key, paket in VIP_PACKAGES.items():
         name = paket.get(
@@ -171,7 +173,7 @@ def build_vvip(
             "• Bisa upload & simpan media\n"
             "• Fitur premium terbuka\n\n"
             "📷 Pembayaran menggunakan "
-            "QR manual."
+            "<b>QR Manual</b>."
         )
     else:
         text = (
@@ -185,18 +187,14 @@ def build_vvip(
             "• All VIP features\n"
             "• Upload & save media\n"
             "• Premium features unlocked\n\n"
-            "📷 Payment uses manual QR."
+            "📷 Payment uses "
+            "<b>manual QR</b>."
         )
     return text, kb.as_markup()
 async def open_vvip(
     message: Message,
     user_id: int,
 ):
-    """
-    Membuka menu VIP.
-    user_id diberikan secara eksplisit agar tidak salah
-    mengambil message.from_user ketika message berasal dari bot.
-    """
     try:
         lang = await get_user_language(
             user_id
@@ -213,24 +211,25 @@ async def open_vvip(
         reply_markup=markup,
     )
 # ============================================================
-# OPEN VIP FROM REPLY BUTTON
+# OPEN VIP FROM MESSAGE
 # ============================================================
 @router.message(F.text == "💎 Upgrade")
 async def vvip_message(
     message: Message,
 ):
+    if not message.from_user:
+        return
     await open_vvip(
         message,
         message.from_user.id,
     )
 # ============================================================
-# OPEN VIP FROM ACCOUNT BUTTON
+# OPEN VIP FROM ACCOUNT
 # ============================================================
 @router.callback_query(F.data == "vvip")
 async def vvip_menu(
     call: CallbackQuery,
 ):
-    # ACK FIRST
     await safe_callback_answer(call)
     if not call.message:
         return
@@ -239,7 +238,7 @@ async def vvip_menu(
         call.from_user.id,
     )
 # ============================================================
-# CREATE AUTO PAYMENT
+# AUTO PAYMENT
 # ============================================================
 async def _create_auto_vip(
     call: CallbackQuery,
@@ -402,14 +401,9 @@ async def _create_auto_vip(
             invoice_id,
             paket["price"],
             invoice_id,
-            payment.get(
-                "payment_url"
-            ),
+            payment.get("payment_url"),
             expires_at,
-            paket.get(
-                "type",
-                "vip",
-            ),
+            paket.get("type", "vip"),
         )
     except Exception:
         logger.exception(
@@ -464,7 +458,7 @@ async def _create_auto_vip(
         call.message
     )
     # --------------------------------------------------------
-    # QR AUTOMATIC
+    # AUTOMATIC QR
     # --------------------------------------------------------
     if qr_string:
         try:
@@ -511,19 +505,24 @@ async def _create_auto_vip(
 async def buy_vip(
     call: CallbackQuery,
 ):
-    # ACK FIRST
     await safe_callback_answer(call)
+    if not call.message:
+        return
     parts = call.data.split(
         ":",
         1,
     )
     if len(parts) != 2:
+        await call.message.answer(
+            "❌ Data paket tidak valid."
+        )
         return
-    paket_id = (
-        paket_id_override
-        if paket_id_override
-        else parts[1].strip()
-    )
+    paket_id = parts[1].strip()
+    if not paket_id:
+        await call.message.answer(
+            "❌ Paket tidak valid."
+        )
+        return
     paket = VIP_PACKAGES.get(
         paket_id
     )
@@ -532,8 +531,14 @@ async def buy_vip(
             "❌ Paket tidak ditemukan."
         )
         return
-    # Semua pembelian VIP/VVIP langsung memakai QR manual.
-    return await vip_manual(call, paket_id_override=paket_id)
+    # ========================================================
+    # SEMUA PEMBELIAN VIP/VVIP -> QR MANUAL
+    # ========================================================
+    return await create_manual_vip_payment(
+        call,
+        paket_id,
+        paket,
+    )
 # ============================================================
 # EXTEND VIP
 # ============================================================
@@ -543,15 +548,24 @@ async def buy_vip(
 async def extend_vip(
     call: CallbackQuery,
 ):
-    # ACK FIRST
     await safe_callback_answer(call)
+    if not call.message:
+        return
     parts = call.data.split(
         ":",
         1,
     )
     if len(parts) != 2:
+        await call.message.answer(
+            "❌ Data paket tidak valid."
+        )
         return
     paket_id = parts[1].strip()
+    if not paket_id:
+        await call.message.answer(
+            "❌ Paket tidak valid."
+        )
+        return
     paket = VIP_PACKAGES.get(
         paket_id
     )
@@ -560,8 +574,14 @@ async def extend_vip(
             "❌ Paket tidak ditemukan."
         )
         return
-    # Perpanjangan VIP/VVIP juga langsung memakai QR manual.
-    return await vip_manual(call, paket_id_override=paket_id)
+    # ========================================================
+    # PERPANJANGAN -> QR MANUAL
+    # ========================================================
+    return await create_manual_vip_payment(
+        call,
+        paket_id,
+        paket,
+    )
 # ============================================================
 # MANUAL FALLBACK
 # ============================================================
@@ -601,36 +621,28 @@ async def _manual_fallback(
         reply_markup=kb,
     )
 # ============================================================
-# OPEN MANUAL PAYMENT
+# CREATE MANUAL VIP PAYMENT
 # ============================================================
-@router.callback_query(
-    F.data.startswith("vipmanual:")
-)
-async def vip_manual(
+async def create_manual_vip_payment(
     call: CallbackQuery,
-    paket_id_override: str | None = None,
+    paket_id: str,
+    paket: dict,
 ):
-    # ACK FIRST
-    await safe_callback_answer(call)
-    parts = call.data.split(
-        ":",
-        1,
-    )
-    if len(parts) != 2:
-        return
-    paket_id = parts[1].strip()
-    paket = VIP_PACKAGES.get(
-        paket_id
-    )
-    if not paket:
-        await call.message.answer(
-            "❌ Paket tidak ditemukan."
-        )
+    """
+    SATU pintu untuk membuat pembayaran manual.
+    Dipakai oleh:
+        buyvip:
+        extendvip:
+        vipmanual:
+    Dengan cara ini paket_id tidak lagi
+    bergantung pada variable override.
+    """
+    if not call.message:
         return
     pool = await get_pool()
     user_id = call.from_user.id
     # --------------------------------------------------------
-    # CHECK PENDING MANUAL PAYMENT
+    # CHECK PENDING
     # --------------------------------------------------------
     try:
         pending = await pool.fetchrow(
@@ -661,7 +673,7 @@ async def vip_manual(
         )
         return
     # --------------------------------------------------------
-    # CREATE MANUAL PAYMENT
+    # CREATE TRANSACTION
     # --------------------------------------------------------
     try:
         tx = await pool.fetchrow(
@@ -702,6 +714,9 @@ async def vip_manual(
         )
         return
     tx_id = tx["id"]
+    # --------------------------------------------------------
+    # CAPTION
+    # --------------------------------------------------------
     caption = (
         "<b>📷 QR MANUAL VIP</b>\n"
         "━━━━━━━━━━━━━━\n\n"
@@ -715,10 +730,9 @@ async def vip_manual(
         "2. Bayar <b>sesuai nominal</b>.\n"
         "3. Tekan "
         "<b>✅ Saya Sudah Bayar</b>.\n\n"
-        "⚠️ Jika pembayaran belum "
-        "lunas/belum masuk, admin dapat "
-        "menandai <b>FAILED</b> dan "
-        "meminta keterangan."
+        "⚠️ Setelah menekan tombol, "
+        "pembayaran akan dikirim ke admin "
+        "untuk diverifikasi."
     )
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -741,6 +755,9 @@ async def vip_manual(
     await safe_delete_message(
         call.message
     )
+    # --------------------------------------------------------
+    # SEND QR MANUAL
+    # --------------------------------------------------------
     try:
         await call.message.answer_photo(
             MANUAL_QR_FILE_ID,
@@ -762,6 +779,46 @@ async def vip_manual(
             parse_mode="HTML",
         )
 # ============================================================
+# OPEN MANUAL PAYMENT
+# ============================================================
+@router.callback_query(
+    F.data.startswith("vipmanual:")
+)
+async def vip_manual(
+    call: CallbackQuery,
+):
+    await safe_callback_answer(call)
+    if not call.message:
+        return
+    parts = call.data.split(
+        ":",
+        1,
+    )
+    if len(parts) != 2:
+        await call.message.answer(
+            "❌ Data paket tidak valid."
+        )
+        return
+    paket_id = parts[1].strip()
+    if not paket_id:
+        await call.message.answer(
+            "❌ Paket tidak valid."
+        )
+        return
+    paket = VIP_PACKAGES.get(
+        paket_id
+    )
+    if not paket:
+        await call.message.answer(
+            "❌ Paket tidak ditemukan."
+        )
+        return
+    return await create_manual_vip_payment(
+        call,
+        paket_id,
+        paket,
+    )
+# ============================================================
 # USER CONFIRMS MANUAL PAYMENT
 # ============================================================
 @router.callback_query(
@@ -770,8 +827,9 @@ async def vip_manual(
 async def vip_manual_check(
     call: CallbackQuery,
 ):
-    # ACK FIRST
     await safe_callback_answer(call)
+    if not call.message:
+        return
     parts = call.data.split(
         ":",
         1,
@@ -852,7 +910,6 @@ async def vip_manual_check(
         ]
     )
     sent = 0
-    # ACK sudah dilakukan sebelum loop admin.
     for admin in ADMIN_IDS:
         try:
             await call.bot.send_message(
@@ -964,13 +1021,13 @@ async def _activate_vip(
 async def vip_approve(
     call: CallbackQuery,
 ):
-    # ACK FIRST
     await safe_callback_answer(call)
+    if not call.message:
+        return
     if call.from_user.id not in ADMIN_IDS:
-        if call.message:
-            await call.message.answer(
-                "❌ Bukan admin."
-            )
+        await call.message.answer(
+            "❌ Bukan admin."
+        )
         return
     parts = call.data.split(
         ":",
@@ -987,9 +1044,6 @@ async def vip_approve(
         )
         return
     pool = await get_pool()
-    # --------------------------------------------------------
-    # FETCH TRANSACTION
-    # --------------------------------------------------------
     try:
         tx = await pool.fetchrow(
             """
@@ -1023,9 +1077,6 @@ async def vip_approve(
             "❌ Paket tidak ditemukan."
         )
         return
-    # --------------------------------------------------------
-    # ATOMIC APPROVE
-    # --------------------------------------------------------
     try:
         updated = await pool.fetchrow(
             """
@@ -1056,9 +1107,6 @@ async def vip_approve(
             "diproses oleh admin lain."
         )
         return
-    # --------------------------------------------------------
-    # ACTIVATE
-    # --------------------------------------------------------
     try:
         expiry, tier = await _activate_vip(
             pool,
@@ -1070,9 +1118,6 @@ async def vip_approve(
             "VIP ACTIVATE ERROR tx=%s",
             tx_id,
         )
-        # Jangan mengubah status approved
-        # menjadi failed secara otomatis.
-        # Admin harus tahu ada masalah DB.
         await call.message.answer(
             "⚠️ Pembayaran sudah APPROVED, "
             "tetapi aktivasi VIP mengalami "
@@ -1082,9 +1127,6 @@ async def vip_approve(
             parse_mode="HTML",
         )
         return
-    # --------------------------------------------------------
-    # USER NOTIFICATION
-    # --------------------------------------------------------
     try:
         await call.bot.send_message(
             tx["user_id"],
@@ -1104,9 +1146,6 @@ async def vip_approve(
         logger.exception(
             "VIP APPROVE USER NOTIFY ERROR"
         )
-    # --------------------------------------------------------
-    # UPDATE ADMIN MESSAGE
-    # --------------------------------------------------------
     try:
         await call.message.edit_text(
             (
@@ -1139,8 +1178,9 @@ async def vip_failed(
     call: CallbackQuery,
     state: FSMContext,
 ):
-    # ACK FIRST
     await safe_callback_answer(call)
+    if not call.message:
+        return
     if call.from_user.id not in ADMIN_IDS:
         await call.message.answer(
             "❌ Bukan admin."
@@ -1212,6 +1252,9 @@ async def vip_failed_reason(
     message: Message,
     state: FSMContext,
 ):
+    if not message.from_user:
+        await state.clear()
+        return
     if message.from_user.id not in ADMIN_IDS:
         await state.clear()
         return
@@ -1305,9 +1348,6 @@ async def vip_failed_reason(
         ),
         parse_mode="HTML",
     )
-    # --------------------------------------------------------
-    # USER NOTIFICATION
-    # --------------------------------------------------------
     try:
         await message.bot.send_message(
             tx["user_id"],
@@ -1316,10 +1356,9 @@ async def vip_failed_reason(
                 "belum dapat diverifikasi</b>\n\n"
                 f"📝 Masukan admin: "
                 f"<i>{safe_html(reason)}</i>\n\n"
-                "Jika pembayaran belum "
-                "lunas/belum masuk, silakan "
-                "lakukan pembayaran yang benar "
-                "lalu gunakan QR Manual lagi."
+                "Silakan lakukan pembayaran "
+                "yang benar lalu gunakan "
+                "QR Manual lagi."
             ),
             parse_mode="HTML",
         )
@@ -1337,8 +1376,9 @@ async def vip_failed_reason(
 async def vip_wait(
     call: CallbackQuery,
 ):
-    # ACK FIRST
     await safe_callback_answer(call)
+    if not call.message:
+        return
     parts = call.data.split(
         ":",
         1,
@@ -1400,8 +1440,9 @@ async def vip_wait(
         return
     await call.message.answer(
         "⏳ Pembayaran belum diterima.\n\n"
-        "Jika QR otomatis error, "
-        "gunakan <b>📷 QR Manual</b> "
+        "QR otomatis sedang tidak digunakan "
+        "untuk pembelian baru.\n"
+        "Gunakan <b>📷 QR Manual</b> "
         "untuk melanjutkan.",
         parse_mode="HTML",
     )
