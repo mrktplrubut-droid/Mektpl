@@ -235,6 +235,8 @@ def dashboard_keyboard():
         callback_data="admin_withdraw"
     )
 
+    kb.button(text="🎨 Creator Payments", callback_data="admin_creator_payments")
+
     kb.button(
         text="💰 Balance",
         callback_data="admin_balance"
@@ -313,3 +315,39 @@ async def admin_home(
 
 
     await call.answer()
+
+@router.callback_query(F.data == "admin_creator_payments")
+async def admin_creator_payments(call: CallbackQuery):
+    if not is_admin(call.from_user.id): return
+    pool=await get_pool()
+    rows=await pool.fetch("SELECT id,user_id,amount,status,created_at FROM creator_payments ORDER BY id DESC LIMIT 20")
+    text="🎨 <b>CREATOR PAYMENTS</b>\n━━━━━━━━━━━━━━\n\n"
+    kb=InlineKeyboardBuilder()
+    if not rows: text += "Belum ada pembayaran kreator."
+    for r in rows:
+        text += f"🧾 CR-{r['id']} • 👤 {r['user_id']} • 💰 {rupiah(r['amount'])} • 📌 {r['status']}\n"
+        if r['status']=='pending':
+            kb.button(text=f"CR-{r['id']}", callback_data=f"creator_check:{r['id']}")
+    kb.button(text="🔙 Admin",callback_data="admin_home"); kb.adjust(2,1)
+    await call.message.edit_text(text,parse_mode="HTML",reply_markup=kb.as_markup()); await call.answer()
+
+
+@router.callback_query(F.data == "admin_creator_payments")
+async def admin_creator_payments(call: CallbackQuery):
+    if not is_admin(call.from_user.id): return
+    pool=await get_pool(); rows=await pool.fetch("SELECT id,user_id,amount,status,created_at FROM creator_payments ORDER BY id DESC LIMIT 20")
+    text="🎨 <b>CREATOR PAYMENTS</b>\n━━━━━━━━━━━━━━\n\n"; kb=InlineKeyboardBuilder()
+    if not rows: text += "Belum ada pembayaran kreator."
+    for r in rows:
+        text += f"🧾 CR-{r['id']} • 👤 {r['user_id']} • 💰 {rupiah(r['amount'])} • 📌 {r['status']}\n"
+        if r['status']=='pending': kb.button(text=f"Review CR-{r['id']}", callback_data=f"admin_creator_review:{r['id']}")
+    kb.button(text="🔙 Admin",callback_data="admin_home"); kb.adjust(1)
+    await call.message.edit_text(text,parse_mode="HTML",reply_markup=kb.as_markup()); await call.answer()
+
+@router.callback_query(F.data.startswith("admin_creator_review:"))
+async def admin_creator_review(call: CallbackQuery):
+    if not is_admin(call.from_user.id): return
+    tx_id=int(call.data.rsplit(":",1)[1]); pool=await get_pool(); tx=await pool.fetchrow("SELECT * FROM creator_payments WHERE id=$1",tx_id)
+    if not tx: return await call.answer("Not found.",show_alert=True)
+    kb=InlineKeyboardBuilder(); kb.button(text="✅ APPROVE",callback_data=f"creator_approve_pay:{tx_id}"); kb.button(text="❌ REJECT",callback_data=f"creator_reject_pay:{tx_id}"); kb.button(text="🔙 List",callback_data="admin_creator_payments"); kb.adjust(2,1)
+    await call.message.edit_text(f"🎨 <b>CREATOR PAYMENT</b>\n\n🧾 CR-{tx_id}\n👤 User: <code>{tx['user_id']}</code>\n💰 Amount: <b>{rupiah(tx['amount'])}</b>\n📌 Status: {tx['status']}",parse_mode="HTML",reply_markup=kb.as_markup()); await call.answer()
