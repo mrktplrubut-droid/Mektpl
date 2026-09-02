@@ -122,6 +122,7 @@ async def payment_worker():
                                 'paid',
                                 NOW()
                             )
+                            ON CONFLICT (user_id, file_code) DO NOTHING
                             """,
                             p["user_id"],
                             p["code"],
