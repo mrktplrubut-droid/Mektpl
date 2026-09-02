@@ -347,6 +347,23 @@ async def init_db():
         );
         """)
 
+        # Compatibility columns required by the current withdrawal/admin flow.
+        for column_name, column_type in [
+            ("method_name", "TEXT"),
+            ("account_number", "TEXT"),
+            ("account_name", "TEXT"),
+            ("fee", "BIGINT DEFAULT 0"),
+            ("total_cut", "BIGINT DEFAULT 0"),
+            ("receive_amount", "BIGINT DEFAULT 0"),
+            ("channel_message_id", "BIGINT"),
+            ("admin_id", "BIGINT"),
+            ("reason", "TEXT"),
+            ("reviewed_at", "TIMESTAMP"),
+        ]:
+            await conn.execute(
+                f"ALTER TABLE withdraws ADD COLUMN IF NOT EXISTS {column_name} {column_type};"
+            )
+
         # ========================
         # FILE PURCHASES
         # ========================
@@ -448,6 +465,21 @@ async def init_db():
         # ========================
         # MARKETPLACE REAL-TIME COUNTERS / REACTIONS
         # ========================
+        # Marketplace server / creator economy
+        await conn.execute("ALTER TABLE files ADD COLUMN IF NOT EXISTS market_server TEXT DEFAULT '1';")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_files_market_server ON files(market_server);")
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS creator_payments (
+            id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL, amount BIGINT NOT NULL DEFAULT 150000,
+            status TEXT NOT NULL DEFAULT 'pending', admin_id BIGINT, reason TEXT, created_at TIMESTAMP DEFAULT NOW(), reviewed_at TIMESTAMP
+        );
+        """)
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS creator_earnings (
+            id BIGSERIAL PRIMARY KEY, seller_id BIGINT NOT NULL, file_code TEXT NOT NULL, purchase_id BIGINT, gross_amount BIGINT NOT NULL, creator_amount BIGINT NOT NULL, created_at TIMESTAMP DEFAULT NOW(), UNIQUE(purchase_id)
+        );
+        """)
+
         file_columns = [
             ("views", "BIGINT DEFAULT 0"),
             ("view_count", "BIGINT DEFAULT 0"),
@@ -512,6 +544,11 @@ async def init_db():
                 COALESCE(total_referral, 0)
             );
         """)
+
+        await conn.execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS description TEXT;")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS file_favorites (user_id BIGINT NOT NULL, file_code TEXT NOT NULL, created_at TIMESTAMP DEFAULT NOW(), PRIMARY KEY(user_id,file_code));""")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS file_ratings (id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL,file_code TEXT NOT NULL,rating INT NOT NULL CHECK(rating BETWEEN 1 AND 5),created_at TIMESTAMP DEFAULT NOW(),UNIQUE(user_id,file_code));""")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS user_payment_methods (id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL,method_name TEXT NOT NULL,account_number TEXT NOT NULL,account_name TEXT NOT NULL,created_at TIMESTAMP DEFAULT NOW());""")
 
         # ========================
         # LOGS
