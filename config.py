@@ -13,7 +13,7 @@ TIMEZONE = "Asia/Jakarta"
 # =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-BOT_USERNAME = "botmarketRobot"
+BOT_USERNAME = os.getenv("BOT_USERNAME", "mktplbot").lstrip("@").strip()
 BOT_URL = f"https://t.me/{BOT_USERNAME}"
 
 # =========================
@@ -70,7 +70,14 @@ GROUP_ID = int(
     os.getenv("GROUP_ID", str(CHANNEL_ID))
 )
 
-NOTIF_CHANNEL_ID = -1004413314849
+NOTIF_CHANNEL_ID = int(os.getenv("NOTIF_CHANNEL_ID", "-1004413314849"))
+
+# Public channel links used by the More Menu. Keep these configurable so the bot
+# never needs hard-coded Telegram invite links in handler code.
+REVIEW_CHANNEL_URL = os.getenv("REVIEW_CHANNEL_URL", "https://t.me/inforobotnew")
+NOTIFICATION_CHANNEL_URL = os.getenv("NOTIFICATION_CHANNEL_URL", "https://t.me/+iG0rS6GFY3Y2NTNk")
+TRANSACTION_CHANNEL_URL = os.getenv("TRANSACTION_CHANNEL_URL", "https://t.me/+0ddS3Ha4c2pkNmJl")
+ALL_CODE_CHANNEL_URL = os.getenv("ALL_CODE_CHANNEL_URL", "https://t.me/inforobotnew")
 
 # =========================
 # WITHDRAW

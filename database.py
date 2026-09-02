@@ -143,7 +143,8 @@ async def init_db():
             ("expired_at", "TIMESTAMP"),
             ("language", "TEXT"),
             ("free_share_count", "INT DEFAULT 0"),
-            ("paid_quota", "INT DEFAULT 0")
+            ("paid_quota", "INT DEFAULT 0"),
+            ("total_withdraw", "BIGINT DEFAULT 0")
         ]
 
         for column_name, column_type in user_columns:
@@ -337,32 +338,27 @@ async def init_db():
         # ========================
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS withdraws (
-            id SERIAL PRIMARY KEY,
-            user_id BIGINT,
-            amount BIGINT,
-            method TEXT,
-            account TEXT,
-            status TEXT DEFAULT 'pending',
-            created_at TIMESTAMP DEFAULT NOW()
+            id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL, amount BIGINT NOT NULL DEFAULT 0,
+            fee BIGINT NOT NULL DEFAULT 0, receive_amount BIGINT NOT NULL DEFAULT 0, total_cut BIGINT NOT NULL DEFAULT 0,
+            method TEXT, account TEXT, method_name TEXT, account_number TEXT, account_name TEXT,
+            status TEXT NOT NULL DEFAULT 'pending', created_at TIMESTAMP DEFAULT NOW(), processed_at TIMESTAMP,
+            paid_at TIMESTAMP, admin_note TEXT, transaction_id TEXT, channel_message_id BIGINT, updated_at TIMESTAMP DEFAULT NOW()
         );
+        ALTER TABLE withdraws ADD COLUMN IF NOT EXISTS fee BIGINT NOT NULL DEFAULT 0;
+        ALTER TABLE withdraws ADD COLUMN IF NOT EXISTS receive_amount BIGINT NOT NULL DEFAULT 0;
+        ALTER TABLE withdraws ADD COLUMN IF NOT EXISTS total_cut BIGINT NOT NULL DEFAULT 0;
+        ALTER TABLE withdraws ADD COLUMN IF NOT EXISTS method_name TEXT;
+        ALTER TABLE withdraws ADD COLUMN IF NOT EXISTS account_number TEXT;
+        ALTER TABLE withdraws ADD COLUMN IF NOT EXISTS account_name TEXT;
+        ALTER TABLE withdraws ADD COLUMN IF NOT EXISTS processed_at TIMESTAMP;
+        ALTER TABLE withdraws ADD COLUMN IF NOT EXISTS paid_at TIMESTAMP;
+        ALTER TABLE withdraws ADD COLUMN IF NOT EXISTS admin_note TEXT;
+        ALTER TABLE withdraws ADD COLUMN IF NOT EXISTS transaction_id TEXT;
+        ALTER TABLE withdraws ADD COLUMN IF NOT EXISTS channel_message_id BIGINT;
+        ALTER TABLE withdraws ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();
+        UPDATE withdraws SET receive_amount=amount WHERE receive_amount IS NULL OR receive_amount=0;
+        UPDATE withdraws SET total_cut=amount+fee WHERE total_cut IS NULL OR total_cut=0;
         """)
-
-        # Compatibility columns required by the current withdrawal/admin flow.
-        for column_name, column_type in [
-            ("method_name", "TEXT"),
-            ("account_number", "TEXT"),
-            ("account_name", "TEXT"),
-            ("fee", "BIGINT DEFAULT 0"),
-            ("total_cut", "BIGINT DEFAULT 0"),
-            ("receive_amount", "BIGINT DEFAULT 0"),
-            ("channel_message_id", "BIGINT"),
-            ("admin_id", "BIGINT"),
-            ("reason", "TEXT"),
-            ("reviewed_at", "TIMESTAMP"),
-        ]:
-            await conn.execute(
-                f"ALTER TABLE withdraws ADD COLUMN IF NOT EXISTS {column_name} {column_type};"
-            )
 
         # ========================
         # FILE PURCHASES
@@ -463,23 +459,46 @@ async def init_db():
         """)
 
         # ========================
-        # MARKETPLACE REAL-TIME COUNTERS / REACTIONS
+        # FILES / MARKETPLACE CORE
         # ========================
-        # Marketplace server / creator economy
-        await conn.execute("ALTER TABLE files ADD COLUMN IF NOT EXISTS market_server TEXT DEFAULT '1';")
-        await conn.execute("CREATE INDEX IF NOT EXISTS idx_files_market_server ON files(market_server);")
         await conn.execute("""
-        CREATE TABLE IF NOT EXISTS creator_payments (
-            id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL, amount BIGINT NOT NULL DEFAULT 150000,
-            status TEXT NOT NULL DEFAULT 'pending', admin_id BIGINT, reason TEXT, created_at TIMESTAMP DEFAULT NOW(), reviewed_at TIMESTAMP
+        CREATE TABLE IF NOT EXISTS files (
+            id BIGSERIAL PRIMARY KEY,
+            code TEXT UNIQUE NOT NULL, title TEXT, description TEXT, category TEXT,
+            creator TEXT, media TEXT, share_media BOOLEAN DEFAULT FALSE, is_share BOOLEAN DEFAULT FALSE,
+            owner_id BIGINT, seller_id BIGINT, media_count INT DEFAULT 0, expires_at TIMESTAMP,
+            is_paid BOOLEAN DEFAULT FALSE, price BIGINT DEFAULT 0, payment_provider TEXT,
+            review_photos TEXT, view_count BIGINT DEFAULT 0, download_count BIGINT DEFAULT 0,
+            favorite_count BIGINT DEFAULT 0, views BIGINT DEFAULT 0, sold BIGINT DEFAULT 0, buy_count BIGINT DEFAULT 0,
+            likes BIGINT DEFAULT 0, dislikes BIGINT DEFAULT 0, rating NUMERIC(3,1) DEFAULT 0,
+            review_count BIGINT DEFAULT 0, free_progress INT DEFAULT 0, free_unlock_enabled BOOLEAN DEFAULT TRUE,
+            created_at TIMESTAMP DEFAULT NOW()
         );
         """)
+        for column_name, column_type in [
+            ("description","TEXT"),("category","TEXT"),("creator","TEXT"),("media","TEXT"),
+            ("share_media","BOOLEAN DEFAULT FALSE"),("is_share","BOOLEAN DEFAULT FALSE"),("owner_id","BIGINT"),
+            ("seller_id","BIGINT"),("media_count","INT DEFAULT 0"),("expires_at","TIMESTAMP"),("is_paid","BOOLEAN DEFAULT FALSE"),
+            ("price","BIGINT DEFAULT 0"),("payment_provider","TEXT"),("review_photos","TEXT"),("view_count","BIGINT DEFAULT 0"),
+            ("download_count","BIGINT DEFAULT 0"),("favorite_count","BIGINT DEFAULT 0"),("created_at","TIMESTAMP DEFAULT NOW()")]:
+            await conn.execute(f"ALTER TABLE files ADD COLUMN IF NOT EXISTS {column_name} {column_type};")
+
         await conn.execute("""
-        CREATE TABLE IF NOT EXISTS creator_earnings (
-            id BIGSERIAL PRIMARY KEY, seller_id BIGINT NOT NULL, file_code TEXT NOT NULL, purchase_id BIGINT, gross_amount BIGINT NOT NULL, creator_amount BIGINT NOT NULL, created_at TIMESTAMP DEFAULT NOW(), UNIQUE(purchase_id)
+        CREATE TABLE IF NOT EXISTS user_payment_methods (
+            id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL, method_name TEXT NOT NULL,
+            account_number TEXT NOT NULL, account_name TEXT NOT NULL, created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW(),
+            UNIQUE(user_id, method_name, account_number)
         );
+        CREATE INDEX IF NOT EXISTS idx_user_payment_methods_user ON user_payment_methods(user_id);
+        """)
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS file_favorites (user_id BIGINT NOT NULL, file_code TEXT NOT NULL, created_at TIMESTAMP DEFAULT NOW(), PRIMARY KEY(user_id,file_code));
+        CREATE TABLE IF NOT EXISTS file_ratings (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL, file_code TEXT NOT NULL, rating INT NOT NULL CHECK(rating BETWEEN 1 AND 5), created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW(), UNIQUE(user_id,file_code));
         """)
 
+        # ========================
+        # MARKETPLACE REAL-TIME COUNTERS / REACTIONS
+        # ========================
         file_columns = [
             ("views", "BIGINT DEFAULT 0"),
             ("view_count", "BIGINT DEFAULT 0"),
@@ -545,10 +564,11 @@ async def init_db():
             );
         """)
 
-        await conn.execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS description TEXT;")
-        await conn.execute("""CREATE TABLE IF NOT EXISTS file_favorites (user_id BIGINT NOT NULL, file_code TEXT NOT NULL, created_at TIMESTAMP DEFAULT NOW(), PRIMARY KEY(user_id,file_code));""")
-        await conn.execute("""CREATE TABLE IF NOT EXISTS file_ratings (id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL,file_code TEXT NOT NULL,rating INT NOT NULL CHECK(rating BETWEEN 1 AND 5),created_at TIMESTAMP DEFAULT NOW(),UNIQUE(user_id,file_code));""")
-        await conn.execute("""CREATE TABLE IF NOT EXISTS user_payment_methods (id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL,method_name TEXT NOT NULL,account_number TEXT NOT NULL,account_name TEXT NOT NULL,created_at TIMESTAMP DEFAULT NOW());""")
+        # ========================
+        # ADMINS / VIP
+        # ========================
+        await conn.execute("""CREATE TABLE IF NOT EXISTS admins (user_id BIGINT PRIMARY KEY, role TEXT DEFAULT 'admin', created_at TIMESTAMP DEFAULT NOW());""")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS vip_users (user_id BIGINT PRIMARY KEY, plan TEXT DEFAULT 'FREE', expired_at TIMESTAMP, created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW());""")
 
         # ========================
         # LOGS
