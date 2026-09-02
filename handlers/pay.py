@@ -57,7 +57,11 @@ FAILED_STATUSES = {
 # Code panjang tidak boleh langsung dimasukkan ke callback.
 CALLBACK_TOKEN_TTL = 900
 
+# ============================================================
+# CASHI / PAYMENT CHECK LOCK
+# ============================================================
 
+CHECK_LOCK = 30
 # ============================================================
 # FSM
 # ============================================================
@@ -381,6 +385,50 @@ async def manual_payment_keyboard(
         ]
     )
 
+
+# ============================================================
+# CASHI PAYMENT CHECK KEYBOARD
+# ============================================================
+
+async def payment_check_keyboard(
+    code: str,
+    payment_id: str | None = None,
+):
+    """
+    Keyboard untuk pembayaran otomatis Cashi.
+
+    Callback tidak menyimpan code/payment_id secara langsung
+    agar tetap aman dari batas 64 bytes Telegram.
+    """
+
+    data = {
+        "code": str(code or "").strip(),
+    }
+
+    if payment_id:
+        data["payment_id"] = str(payment_id).strip()
+
+    token = await create_callback_token(
+        "paymentcheck",
+        data,
+    )
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔄 Cek Pembayaran",
+                    callback_data=f"paymentcheck:{token}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="❌ Batal",
+                    callback_data="close",
+                )
+            ],
+        ]
+    )
 
 # ============================================================
 # MEDIA KEYBOARD
