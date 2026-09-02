@@ -1,11 +1,12 @@
 import asyncio
 import json
 import logging
-import random
 import re
+import secrets
 import time
 
 from contextlib import asynccontextmanager
+from html import escape
 from typing import Dict, Optional
 
 from aiogram import Router, F
@@ -17,6 +18,7 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
+    InputMediaPhoto,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
@@ -36,9 +38,18 @@ router = Router()
 MAX_MEDIA = 200
 MAX_REVIEW_PHOTOS = 5
 
-UPDATE_DELAY = 0.5
-COPY_DELAY = 0.2
+# Jangan terlalu sering edit message progress.
+UPDATE_DELAY = 0.7
 
+# Delay kecil setelah copy berhasil.
+# Kecepatan utama didapat dari tidak memakai global copy lock.
+COPY_DELAY = 0.05
+
+# Maksimal copy storage bersamaan untuk seluruh bot.
+# 2 = aman dan cukup cepat.
+STORAGE_CONCURRENCY = 2
+
+# Channel review paid file.
 REVIEW_CHANNEL_ID = -1003984536150
 
 
@@ -50,28 +61,139 @@ logger = logging.getLogger(__name__)
 
 
 # =========================================================
-# LOCKS
+# RUNTIME LOCKS / THROTTLE
 # =========================================================
 
 _last_update: Dict[int, float] = {}
+
 _user_locks: Dict[int, asyncio.Lock] = {}
+_user_lock_refs: Dict[int, int] = {}
 
-_copy_lock = asyncio.Lock()
+_storage_semaphore = asyncio.Semaphore(
+    STORAGE_CONCURRENCY
+)
 
+
+# =========================================================
+# USER LOCK
+# =========================================================
 
 def get_lock(user_id: int) -> asyncio.Lock:
+    """
+    Satu user hanya boleh menjalankan satu proses upload
+    pada satu waktu.
 
-    if user_id not in _user_locks:
-        _user_locks[user_id] = asyncio.Lock()
+    User berbeda tetap dapat upload secara bersamaan.
+    """
 
-    return _user_locks[user_id]
+    lock = _user_locks.get(user_id)
+
+    if lock is None:
+        lock = asyncio.Lock()
+        _user_locks[user_id] = lock
+
+    return lock
 
 
 @asynccontextmanager
 async def user_lock(user_id: int):
+    """
+    Lock per-user dengan reference counter.
 
-    async with get_lock(user_id):
-        yield
+    Setelah user selesai dan lock tidak dipakai lagi,
+    lock akan dihapus dari memory.
+    """
+
+    lock = get_lock(user_id)
+
+    _user_lock_refs[user_id] = (
+        _user_lock_refs.get(user_id, 0) + 1
+    )
+
+    try:
+
+        async with lock:
+            yield
+
+    finally:
+
+        refs = _user_lock_refs.get(user_id, 1) - 1
+
+        if refs <= 0:
+
+            _user_lock_refs.pop(
+                user_id,
+                None,
+            )
+
+            # Jangan hapus lock yang sedang locked.
+            current_lock = _user_locks.get(user_id)
+
+            if (
+                current_lock is lock
+                and not lock.locked()
+            ):
+                _user_locks.pop(
+                    user_id,
+                    None,
+                )
+
+        else:
+
+            _user_lock_refs[user_id] = refs
+
+
+# =========================================================
+# SAFE CALLBACK ANSWER
+# =========================================================
+
+async def safe_callback_answer(
+    call: CallbackQuery,
+    text: Optional[str] = None,
+    show_alert: bool = False,
+):
+    """
+    Menjawab callback dengan aman.
+
+    Mencegah error:
+    - query is too old
+    - query ID is invalid
+    - callback sudah dijawab
+    """
+
+    try:
+
+        await call.answer(
+            text=text,
+            show_alert=show_alert,
+        )
+
+    except TelegramBadRequest as e:
+
+        error = str(e).lower()
+
+        if (
+            "query is too old" in error
+            or "query id is invalid" in error
+            or "query is already answered" in error
+        ):
+            logger.debug(
+                "IGNORED CALLBACK ANSWER ERROR | %s",
+                e,
+            )
+            return
+
+        logger.debug(
+            "CALLBACK ANSWER ERROR | %s",
+            e,
+        )
+
+    except Exception as e:
+
+        logger.debug(
+            "CALLBACK ANSWER UNEXPECTED ERROR | %s",
+            e,
+        )
 
 
 # =========================================================
@@ -106,7 +228,7 @@ def normalize(text: str) -> str:
     return re.sub(
         r"[^a-z0-9]",
         "",
-        (text or "").lower()
+        (text or "").lower(),
     )
 
 
@@ -121,7 +243,7 @@ def is_bad(text: str) -> bool:
 
 
 # =========================================================
-# USER LOCK / SAFE UPDATE
+# SAFE UPDATE
 # =========================================================
 
 async def safe_update(
@@ -132,16 +254,23 @@ async def safe_update(
     reply_markup=None,
 ):
     """
-    Update pesan progress dengan throttle
-    agar tidak terkena flood Telegram.
+    Edit progress message dengan throttle.
+
+    Menghindari:
+    - terlalu banyak edit
+    - message is not modified
+    - message tidak ditemukan
     """
 
     now = time.monotonic()
 
-    last = _last_update.get(chat_id, 0)
+    last = _last_update.get(
+        chat_id,
+        0,
+    )
 
     if now - last < UPDATE_DELAY:
-        return
+        return False
 
     _last_update[chat_id] = now
 
@@ -155,9 +284,28 @@ async def safe_update(
             reply_markup=reply_markup,
         )
 
-    except TelegramBadRequest:
-        # Bisa terjadi kalau text sama / message sudah berubah.
-        pass
+        return True
+
+    except TelegramBadRequest as e:
+
+        error = str(e).lower()
+
+        if (
+            "message is not modified" in error
+            or "message to edit not found" in error
+            or "message can't be edited" in error
+            or "message identifier is not specified" in error
+        ):
+            return False
+
+        logger.debug(
+            "SAFE UPDATE BAD REQUEST | chat=%s | message=%s | error=%s",
+            chat_id,
+            message_id,
+            e,
+        )
+
+        return False
 
     except Exception:
 
@@ -167,9 +315,11 @@ async def safe_update(
             message_id,
         )
 
+        return False
+
 
 # =========================================================
-# COPY FILE TO STORAGE CHANNEL
+# COPY TO STORAGE CHANNEL
 # =========================================================
 
 async def copy_to_storage(
@@ -177,8 +327,17 @@ async def copy_to_storage(
     from_chat_id: int,
     message_id: int,
 ):
+    """
+    Copy media ke storage channel.
 
-    async with _copy_lock:
+    Penting:
+    - Maksimal STORAGE_CONCURRENCY proses bersamaan.
+    - User berbeda tidak saling memblokir.
+    - TelegramRetryAfter ditangani otomatis.
+    - Tidak menggunakan gather untuk 200 media.
+    """
+
+    async with _storage_semaphore:
 
         while True:
 
@@ -190,25 +349,47 @@ async def copy_to_storage(
                     message_id=message_id,
                 )
 
-                await asyncio.sleep(COPY_DELAY)
+                if COPY_DELAY > 0:
+
+                    await asyncio.sleep(
+                        COPY_DELAY
+                    )
 
                 return copied
 
             except TelegramRetryAfter as e:
 
+                retry_after = max(
+                    float(e.retry_after),
+                    0.5,
+                )
+
                 logger.warning(
-                    "TelegramRetryAfter STORAGE | retry=%s",
-                    e.retry_after,
+                    "STORAGE RATE LIMIT | retry_after=%.2fs",
+                    retry_after,
                 )
 
                 await asyncio.sleep(
-                    e.retry_after + 1
+                    retry_after + 0.2
                 )
+
+            except TelegramBadRequest as e:
+
+                logger.error(
+                    "STORAGE BAD REQUEST | from_chat=%s | message=%s | error=%s",
+                    from_chat_id,
+                    message_id,
+                    e,
+                )
+
+                raise
 
             except Exception:
 
                 logger.exception(
-                    "COPY STORAGE ERROR"
+                    "STORAGE COPY ERROR | from_chat=%s | message=%s",
+                    from_chat_id,
+                    message_id,
                 )
 
                 raise
@@ -227,10 +408,8 @@ async def generate_code() -> str:
     while True:
 
         code = "".join(
-            random.choices(
-                chars,
-                k=40,
-            )
+            secrets.choice(chars)
+            for _ in range(40)
         )
 
         exists = await pool.fetchval(
@@ -253,7 +432,10 @@ async def generate_code() -> str:
 
 def rupiah(amount: int) -> str:
 
-    return f"Rp{amount:,}".replace(",", ".")
+    return f"Rp{amount:,}".replace(
+        ",",
+        ".",
+    )
 
 
 # =========================================================
@@ -275,7 +457,7 @@ def mask_user_id(user_id: int) -> str:
 
 
 # =========================================================
-# MEDIA KEYBOARD
+# UPLOAD KEYBOARD
 # =========================================================
 
 def upload_keyboard():
@@ -321,6 +503,24 @@ def review_keyboard():
 
 
 # =========================================================
+# HOME KEYBOARD
+# =========================================================
+
+def home_keyboard():
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🏠 Home",
+                    callback_data="home",
+                )
+            ]
+        ]
+    )
+
+
+# =========================================================
 # START UPLOAD
 # =========================================================
 
@@ -332,7 +532,10 @@ async def start_upload(
     state: FSMContext,
 ):
 
-    await call.answer()
+    # ACK SECEPAT MUNGKIN
+    await safe_callback_answer(
+        call
+    )
 
     user_id = call.from_user.id
 
@@ -384,7 +587,7 @@ async def start_upload(
     )
 
     # -----------------------------------------------------
-    # SAVE USER INFO TO STATE
+    # SAVE USER INFO
     # -----------------------------------------------------
 
     await state.update_data(
@@ -438,8 +641,6 @@ async def start_upload(
         text += (
             "🎨 Status : "
             "<b>Kreator Terverifikasi</b> ✅\n\n"
-
-            "Kamu dapat membuat:\n"
             "🆓 File FREE\n"
             "💰 File PAID\n\n"
         )
@@ -448,11 +649,9 @@ async def start_upload(
 
         text += (
             "👤 Status : <b>User</b>\n\n"
-
-            "🆓 Kamu dapat membuat file FREE.\n"
-
-            "🔒 File PAID hanya dapat dibuat "
-            "oleh Kreator terverifikasi.\n\n"
+            "🆓 File FREE tersedia.\n"
+            "🔒 File PAID hanya untuk "
+            "Kreator terverifikasi.\n\n"
         )
 
     text += (
@@ -472,9 +671,26 @@ async def start_upload(
             reply_markup=upload_keyboard(),
         )
 
-        progress_id = call.message.message_id
+        progress_id = (
+            call.message.message_id
+        )
+
+    except TelegramBadRequest:
+
+        msg = await call.message.answer(
+            text,
+            parse_mode="HTML",
+            reply_markup=upload_keyboard(),
+        )
+
+        progress_id = msg.message_id
 
     except Exception:
+
+        logger.exception(
+            "START UPLOAD MESSAGE ERROR | user=%s",
+            user_id,
+        )
 
         msg = await call.message.answer(
             text,
@@ -485,7 +701,7 @@ async def start_upload(
         progress_id = msg.message_id
 
     # -----------------------------------------------------
-    # SAVE PROGRESS MESSAGE ID
+    # SAVE PROGRESS ID
     # -----------------------------------------------------
 
     await state.update_data(
@@ -501,7 +717,7 @@ async def start_upload(
     UploadState.upload,
     F.document
     | F.video
-    | F.photo
+    | F.photo,
 )
 async def receive_media(
     message: Message,
@@ -518,12 +734,17 @@ async def receive_media(
         # CHECK UPLOAD MODE
         # -------------------------------------------------
 
-        if not data.get("upload_mode"):
+        if not data.get(
+            "upload_mode",
+            False,
+        ):
             return
 
-        media = data.get(
-            "media",
-            []
+        media = list(
+            data.get(
+                "media",
+                [],
+            )
         )
 
         # -------------------------------------------------
@@ -532,23 +753,28 @@ async def receive_media(
 
         if len(media) >= MAX_MEDIA:
 
+            try:
+                await message.delete()
+            except Exception:
+                pass
+
             return await message.answer(
                 f"❌ Maksimal {MAX_MEDIA} media."
             )
 
         # -------------------------------------------------
-        # CREATOR STATUS
+        # CREATOR
         # -------------------------------------------------
 
         is_creator = bool(
             data.get(
                 "is_creator",
-                False
+                False,
             )
         )
 
         # -------------------------------------------------
-        # GET FILE DATA
+        # FILE DATA
         # -------------------------------------------------
 
         file_id = None
@@ -560,7 +786,9 @@ async def receive_media(
 
             file_type = "document"
 
-            file_id = message.document.file_id
+            file_id = (
+                message.document.file_id
+            )
 
             file_name = (
                 message.document.file_name
@@ -575,7 +803,9 @@ async def receive_media(
 
             file_type = "video"
 
-            file_id = message.video.file_id
+            file_id = (
+                message.video.file_id
+            )
 
             file_name = getattr(
                 message.video,
@@ -592,20 +822,21 @@ async def receive_media(
 
             file_type = "photo"
 
-            file_id = (
-                message.photo[-1].file_id
-            )
+            photo = message.photo[-1]
+
+            file_id = photo.file_id
 
             file_size = (
-                message.photo[-1].file_size
+                photo.file_size
                 or 0
             )
 
         if not file_id:
+
             return
 
         # -------------------------------------------------
-        # DUPLICATE CHECK
+        # DUPLICATE
         # -------------------------------------------------
 
         if any(
@@ -650,12 +881,14 @@ async def receive_media(
                 )
 
                 return await message.answer(
-                    "⚠️ Gagal menyimpan file ke storage.\n"
-                    "Silakan coba lagi."
+                    "⚠️ <b>Gagal menyimpan file.</b>\n\n"
+                    "File belum ditambahkan.\n"
+                    "Silakan coba kirim ulang.",
+                    parse_mode="HTML",
                 )
 
         # -------------------------------------------------
-        # APPEND MEDIA
+        # APPEND
         # -------------------------------------------------
 
         media.append({
@@ -673,12 +906,16 @@ async def receive_media(
             "position": len(media) + 1,
         })
 
+        # -------------------------------------------------
+        # SAVE STATE
+        # -------------------------------------------------
+
         await state.update_data(
             media=media
         )
 
         # -------------------------------------------------
-        # UPDATE PROGRESS
+        # PROGRESS
         # -------------------------------------------------
 
         progress_id = data.get(
@@ -703,13 +940,10 @@ async def receive_media(
 
                 (
                     "📦 <b>UPLOAD MODE</b>\n\n"
-
                     f"📁 Media : "
                     f"<b>{len(media)}/{MAX_MEDIA}</b>\n"
-
                     f"💾 Penyimpanan : "
                     f"<b>{storage_text}</b>\n\n"
-
                     "Kirim media lagi atau tekan "
                     "<b>STOP & SAVE</b>."
                 ),
@@ -726,6 +960,13 @@ async def receive_media(
         except Exception:
             pass
 
+        logger.info(
+            "MEDIA ADDED | user=%s | type=%s | total=%s",
+            user_id,
+            file_type,
+            len(media),
+        )
+
 
 # =========================================================
 # CANCEL UPLOAD
@@ -739,7 +980,9 @@ async def cancel_upload(
     state: FSMContext,
 ):
 
-    await call.answer()
+    await safe_callback_answer(
+        call
+    )
 
     user_id = call.from_user.id
 
@@ -756,7 +999,7 @@ async def cancel_upload(
         )
 
         # -------------------------------------------------
-        # DELETE PROGRESS
+        # DELETE OLD MESSAGES
         # -------------------------------------------------
 
         for message_id in (
@@ -778,7 +1021,7 @@ async def cancel_upload(
                 pass
 
         # -------------------------------------------------
-        # CLEAR STATE
+        # CLEAR
         # -------------------------------------------------
 
         await state.clear()
@@ -792,16 +1035,7 @@ async def cancel_upload(
             await call.message.edit_text(
                 "❌ <b>Upload dibatalkan.</b>",
                 parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            InlineKeyboardButton(
-                                text="🏠 Home",
-                                callback_data="home",
-                            )
-                        ]
-                    ]
-                ),
+                reply_markup=home_keyboard(),
             )
 
         except Exception:
@@ -809,6 +1043,7 @@ async def cancel_upload(
             await call.message.answer(
                 "❌ <b>Upload dibatalkan.</b>",
                 parse_mode="HTML",
+                reply_markup=home_keyboard(),
             )
 
 
@@ -824,7 +1059,10 @@ async def choose_share_mode(
     state: FSMContext,
 ):
 
-    await call.answer()
+    # ACK SEBELUM DB/STATE
+    await safe_callback_answer(
+        call
+    )
 
     user_id = call.from_user.id
 
@@ -832,24 +1070,31 @@ async def choose_share_mode(
 
         data = await state.get_data()
 
-        if not data.get("upload_mode"):
+        if not data.get(
+            "upload_mode",
+            False,
+        ):
 
-            return await call.answer(
-                "❌ Sesi upload sudah berakhir.",
-                show_alert=True,
+            return await call.message.answer(
+                "❌ Sesi upload sudah berakhir."
             )
 
-        media = data.get(
-            "media",
-            []
+        media = list(
+            data.get(
+                "media",
+                [],
+            )
         )
 
         if not media:
 
-            return await call.answer(
-                "❌ Belum ada media.",
-                show_alert=True,
+            return await call.message.answer(
+                "❌ Belum ada media."
             )
+
+        # -------------------------------------------------
+        # KEYBOARD
+        # -------------------------------------------------
 
         kb = InlineKeyboardBuilder()
 
@@ -868,10 +1113,8 @@ async def choose_share_mode(
         await call.message.edit_text(
 
             "📦 <b>PILIH MODE FILE</b>\n\n"
-
             "🔗 <b>Share Media</b>\n"
             "File bisa dibuka melalui link.\n\n"
-
             "🔒 <b>Private</b>\n"
             "File hanya dapat dibuka melalui code.",
 
@@ -893,11 +1136,24 @@ async def share_handler(
     state: FSMContext,
 ):
 
-    await call.answer()
+    await safe_callback_answer(
+        call
+    )
 
     user_id = call.from_user.id
 
     async with user_lock(user_id):
+
+        data = await state.get_data()
+
+        if not data.get(
+            "upload_mode",
+            False,
+        ):
+
+            return await call.message.answer(
+                "❌ Sesi upload sudah berakhir."
+            )
 
         share = (
             call.data == "share_yes"
@@ -914,9 +1170,7 @@ async def share_handler(
         await call.message.edit_text(
 
             "📝 <b>MASUKKAN JUDUL FILE</b>\n\n"
-
             "Kirim judul file.\n"
-
             "Ketik <code>/skip</code> "
             "untuk menggunakan judul otomatis.",
 
@@ -1001,13 +1255,10 @@ async def input_title(
         await message.answer(
 
             "💎 <b>PILIH TIPE FILE</b>\n\n"
-
             "🆓 <b>FREE</b>\n"
             "File dapat diakses gratis.\n\n"
-
             "💰 <b>PAID</b>\n"
             "File harus dibayar terlebih dahulu.\n\n"
-
             "🔒 PAID hanya tersedia untuk "
             "Kreator terverifikasi.",
 
@@ -1029,7 +1280,9 @@ async def file_free(
     state: FSMContext,
 ):
 
-    await call.answer()
+    await safe_callback_answer(
+        call
+    )
 
     user_id = call.from_user.id
 
@@ -1037,11 +1290,19 @@ async def file_free(
 
         data = await state.get_data()
 
+        if not data.get(
+            "upload_mode",
+            False,
+        ):
+
+            return await call.message.answer(
+                "❌ Sesi upload sudah berakhir."
+            )
+
         if not data.get("media"):
 
-            return await call.answer(
-                "❌ Tidak ada media.",
-                show_alert=True,
+            return await call.message.answer(
+                "❌ Tidak ada media."
             )
 
         await state.update_data(
@@ -1086,45 +1347,59 @@ async def file_paid(
     state: FSMContext,
 ):
 
-    data = await state.get_data()
+    # ACK PALING AWAL
+    await safe_callback_answer(
+        call
+    )
 
-    is_creator = bool(
-        data.get(
-            "is_creator",
-            False
+    user_id = call.from_user.id
+
+    async with user_lock(user_id):
+
+        data = await state.get_data()
+
+        if not data.get(
+            "upload_mode",
+            False,
+        ):
+
+            return await call.message.answer(
+                "❌ Sesi upload sudah berakhir."
+            )
+
+        is_creator = bool(
+            data.get(
+                "is_creator",
+                False,
+            )
         )
-    )
 
-    if not is_creator:
+        if not is_creator:
 
-        return await call.answer(
-            "🔒 Fitur PAID hanya tersedia "
-            "untuk Kreator terverifikasi.",
-            show_alert=True,
+            return await call.message.answer(
+                "🔒 <b>PAID TERKUNCI</b>\n\n"
+                "Fitur PAID hanya tersedia "
+                "untuk Kreator terverifikasi.",
+                parse_mode="HTML",
+            )
+
+        await state.set_state(
+            UploadState.wait_price
         )
 
-    await call.answer()
+        await call.message.edit_text(
 
-    await state.set_state(
-        UploadState.wait_price
-    )
+            "💰 <b>MASUKKAN HARGA FILE</b>\n\n"
+            "Minimal : <b>Rp1.000</b>\n\n"
+            "🎨 Status : "
+            "<b>Kreator Terverifikasi</b> ✅\n\n"
+            "Contoh:\n"
+            "<code>1000</code>\n"
+            "<code>5000</code>\n"
+            "<code>10000</code>",
 
-    await call.message.edit_text(
-
-        "💰 <b>MASUKKAN HARGA FILE</b>\n\n"
-
-        "Minimal : <b>Rp1.000</b>\n\n"
-
-        "🎨 Status : "
-        "<b>Kreator Terverifikasi</b> ✅\n\n"
-
-        "Contoh:\n"
-        "<code>1000</code>\n"
-        "<code>5000</code>\n"
-        "<code>10000</code>",
-
-        parse_mode="HTML",
-    )
+            parse_mode="HTML",
+        )
 
 
 # =========================================================
@@ -1147,7 +1422,7 @@ async def input_price(
 
         if not data.get(
             "is_creator",
-            False
+            False,
         ):
 
             await state.set_state(
@@ -1162,7 +1437,7 @@ async def input_price(
             )
 
         # -------------------------------------------------
-        # NORMALIZE PRICE
+        # PRICE
         # -------------------------------------------------
 
         raw = (
@@ -1179,8 +1454,8 @@ async def input_price(
         if not raw.isdigit():
 
             return await message.answer(
-                "❌ Harga harus berupa angka.\n\n"
 
+                "❌ Harga harus berupa angka.\n\n"
                 "Contoh:\n"
                 "<code>1000</code>\n"
                 "<code>5000</code>\n"
@@ -1199,7 +1474,7 @@ async def input_price(
             )
 
         # -------------------------------------------------
-        # SAVE PAID DATA
+        # SAVE
         # -------------------------------------------------
 
         await state.update_data(
@@ -1220,25 +1495,18 @@ async def input_price(
         await message.answer(
 
             "💰 <b>HARGA FILE</b>\n\n"
-
             f"Harga : <b>{rupiah(price)}</b>\n\n"
-
             "🖼 <b>UPLOAD REVIEW FILE</b>\n\n"
-
             "File PAID wajib mempunyai "
             "foto review.\n\n"
-
             "📸 Minimal : <b>1 foto</b>\n"
             "📸 Maksimal : <b>5 foto</b>\n\n"
-
             "Contoh review:\n"
             "• Screenshot isi file\n"
             "• Preview produk\n"
             "• Contoh hasil\n"
             "• Screenshot materi\n\n"
-
             "Kirim foto review sekarang.\n\n"
-
             "Setelah selesai tekan:\n"
             "✅ <b>SELESAI REVIEW</b>",
 
@@ -1267,14 +1535,16 @@ async def receive_review_photo(
 
         data = await state.get_data()
 
-        # Ambil review yang sudah tersimpan
-        reviews = data.get("review_photos") or []
-
-        # Pastikan list
-        reviews = list(reviews)
+        reviews = list(
+            data.get(
+                "review_photos",
+                [],
+            )
+            or []
+        )
 
         # -------------------------------------------------
-        # MAX REVIEW
+        # MAX
         # -------------------------------------------------
 
         if len(reviews) >= MAX_REVIEW_PHOTOS:
@@ -1289,10 +1559,11 @@ async def receive_review_photo(
             )
 
         # -------------------------------------------------
-        # GET FILE ID
+        # FILE ID
         # -------------------------------------------------
 
         photo = message.photo[-1]
+
         file_id = photo.file_id
 
         # -------------------------------------------------
@@ -1314,22 +1585,22 @@ async def receive_review_photo(
         # APPEND
         # -------------------------------------------------
 
-        reviews.append(file_id)
+        reviews.append(
+            file_id
+        )
 
         # -------------------------------------------------
-        # SIMPAN STATE
+        # SAVE
         # -------------------------------------------------
 
         await state.update_data(
             review_photos=reviews
         )
 
-        # DEBUG
         logger.info(
-            "REVIEW PHOTO SAVED | user=%s | total=%s | photos=%s",
+            "REVIEW PHOTO SAVED | user=%s | total=%s",
             user_id,
             len(reviews),
-            reviews,
         )
 
         # -------------------------------------------------
@@ -1339,10 +1610,8 @@ async def receive_review_photo(
         await message.answer(
 
             "🖼 <b>REVIEW DITAMBAHKAN</b>\n\n"
-
             f"Foto : "
             f"<b>{len(reviews)}/{MAX_REVIEW_PHOTOS}</b>\n\n"
-
             "Kirim foto review lagi atau tekan:\n"
             "✅ <b>SELESAI REVIEW</b>",
 
@@ -1373,15 +1642,25 @@ async def finish_review(
     state: FSMContext,
 ):
 
+    # =====================================================
+    # ACK DULU
+    # =====================================================
+
+    await safe_callback_answer(
+        call
+    )
+
     user_id = call.from_user.id
 
     async with user_lock(user_id):
 
         # -------------------------------------------------
-        # GET CURRENT STATE
+        # STATE
         # -------------------------------------------------
 
-        current_state = await state.get_state()
+        current_state = (
+            await state.get_state()
+        )
 
         logger.info(
             "FINISH REVIEW | user=%s | state=%s",
@@ -1389,32 +1668,27 @@ async def finish_review(
             current_state,
         )
 
-        # -------------------------------------------------
-        # CHECK STATE
-        # -------------------------------------------------
+        if (
+            current_state
+            != UploadState.wait_review.state
+        ):
 
-        if current_state != UploadState.wait_review.state:
-
-            return await call.answer(
-                "❌ Sesi review sudah berakhir.",
-                show_alert=True,
+            return await call.message.answer(
+                "❌ Sesi review sudah berakhir."
             )
 
         # -------------------------------------------------
-        # GET DATA
+        # DATA
         # -------------------------------------------------
 
         data = await state.get_data()
 
-        reviews = data.get("review_photos") or []
-
-        reviews = list(reviews)
-
-        logger.info(
-            "FINISH REVIEW DATA | user=%s | reviews=%s | total=%s",
-            user_id,
-            reviews,
-            len(reviews),
+        reviews = list(
+            data.get(
+                "review_photos",
+                [],
+            )
+            or []
         )
 
         # -------------------------------------------------
@@ -1423,23 +1697,15 @@ async def finish_review(
 
         if len(reviews) < 1:
 
-            return await call.answer(
-                "❌ Minimal 1 foto review.",
-                show_alert=True,
+            return await call.message.answer(
+                "❌ Minimal 1 foto review."
             )
 
         if len(reviews) > MAX_REVIEW_PHOTOS:
 
-            return await call.answer(
-                f"❌ Maksimal {MAX_REVIEW_PHOTOS} foto review.",
-                show_alert=True,
+            return await call.message.answer(
+                f"❌ Maksimal {MAX_REVIEW_PHOTOS} foto review."
             )
-
-        # -------------------------------------------------
-        # ANSWER CALLBACK
-        # -------------------------------------------------
-
-        await call.answer()
 
         # -------------------------------------------------
         # SAVING MESSAGE
@@ -1450,10 +1716,8 @@ async def finish_review(
             await call.message.edit_text(
 
                 "⏳ <b>MENYIMPAN FILE...</b>\n\n"
-
                 f"🖼 Review : "
                 f"<b>{len(reviews)} foto</b>\n\n"
-
                 "Mohon tunggu...",
 
                 parse_mode="HTML",
@@ -1481,7 +1745,7 @@ async def finish_review(
 
 
 # =========================================================
-# SEND PAID REVIEW TO CHANNEL
+# SEND PAID REVIEW
 # =========================================================
 
 async def send_paid_review(
@@ -1495,6 +1759,7 @@ async def send_paid_review(
     media_count: int,
     review_photos: list,
 ):
+
     if not review_photos:
         return
 
@@ -1504,22 +1769,39 @@ async def send_paid_review(
 
     me = await bot.get_me()
 
-    bot_username = me.username or "Unknown"
+    bot_username = (
+        me.username
+        or "Unknown"
+    )
 
     # -----------------------------------------------------
-    # CAPTION
-    # Username creator intentionally omitted from the public
-    # review channel for privacy. The marketplace still keeps
-    # the owner internally for sales and moderation.
+    # ESCAPE HTML
+    # -----------------------------------------------------
+
+    safe_title = escape(
+        title or "Untitled"
+    )
+
+    safe_bot_username = escape(
+        bot_username
+    )
+
+    safe_code = escape(
+        code
+    )
+
+    # -----------------------------------------------------
+    # CLEAN REVIEW CAPTION
     # -----------------------------------------------------
 
     caption = (
         "💰 <b>PAID FILE</b>\n"
-        f"🤖 Bot : @{bot_username}\n"
-        f"📝 Judul : {title}\n"
-        f"📦 Total Media : {media_count}\n"
-        f"💵 Harga : <b>{rupiah(price)}</b>\n"
-        f"🔑 CODE : <code>{code}</code>\n"
+        "━━━━━━━━━━━━━━\n"
+        f"🤖 Bot: @{safe_bot_username}\n"
+        f"📝 Judul: {safe_title}\n"
+        f"📦 Media: {media_count}\n"
+        f"💵 Harga: <b>{rupiah(price)}</b>\n"
+        f"🔑 Code: <code>{safe_code}</code>\n"
         "🛒 File tersedia untuk dibeli."
     )
 
@@ -1527,13 +1809,14 @@ async def send_paid_review(
     # BUILD ALBUM
     # -----------------------------------------------------
 
-    from aiogram.types import InputMediaPhoto
-
     media_group = []
 
-    for index, photo_id in enumerate(review_photos):
+    for index, photo_id in enumerate(
+        review_photos
+    ):
 
         if index == 0:
+
             media_group.append(
                 InputMediaPhoto(
                     media=photo_id,
@@ -1541,7 +1824,9 @@ async def send_paid_review(
                     parse_mode="HTML",
                 )
             )
+
         else:
+
             media_group.append(
                 InputMediaPhoto(
                     media=photo_id,
@@ -1549,7 +1834,7 @@ async def send_paid_review(
             )
 
     # -----------------------------------------------------
-    # SEND ALBUM
+    # SEND
     # -----------------------------------------------------
 
     try:
@@ -1567,13 +1852,19 @@ async def send_paid_review(
 
     except TelegramRetryAfter as e:
 
+        retry_after = max(
+            float(e.retry_after),
+            0.5,
+        )
+
         logger.warning(
-            "TelegramRetryAfter REVIEW | retry=%s",
-            e.retry_after,
+            "REVIEW RATE LIMIT | retry_after=%.2fs | code=%s",
+            retry_after,
+            code,
         )
 
         await asyncio.sleep(
-            e.retry_after + 1
+            retry_after + 0.2
         )
 
         await bot.send_media_group(
@@ -1615,37 +1906,55 @@ async def send_upload_log(
             or "Unknown"
         )
 
+        # -------------------------------------------------
+        # ESCAPE HTML
+        # -------------------------------------------------
+
+        safe_title = escape(
+            title or "Untitled"
+        )
+
+        safe_bot_username = escape(
+            bot_username
+        )
+
+        safe_code = escape(
+            code
+        )
+
         mode = (
             f"💰 PAID {rupiah(price)}"
             if is_paid
             else "🆓 FREE"
         )
 
+        # -------------------------------------------------
+        # CLEAN UPDATE MESSAGE
+        # -------------------------------------------------
+
+        text = (
+            "📤 <b>UPLOAD BARU</b>\n"
+            "━━━━━━━━━━━━━━\n"
+            f"🤖 Bot: @{safe_bot_username}\n"
+            f"🆔 ID: <code>{mask_user_id(user_id)}</code>\n"
+            f"📝 Judul: {safe_title}\n"
+            f"📦 Media: {media_count}\n"
+            f"💎 Status: {mode}\n"
+            f"🔑 Code: <code>{safe_code}</code>"
+        )
+
         await bot.send_message(
 
             chat_id=CHANNEL_ID,
 
-            text=(
-
-                "📤 <b>UPLOAD BARU</b>\n\n"
-
-                f"🤖 Bot : @{bot_username}\n"
-
-                f"🆔 ID : "
-                f"<code>{mask_user_id(user_id)}</code>\n"
-
-                f"📝 Judul : {title}\n"
-
-                f"📦 Total : "
-                f"{media_count} Media\n"
-
-                f"💎 Status : {mode}\n"
-
-                f"🔑 Code : "
-                f"<code>{code}</code>"
-            ),
+            text=text,
 
             parse_mode="HTML",
+        )
+
+        logger.info(
+            "UPLOAD LOG SENT | code=%s",
+            code,
         )
 
     except Exception:
@@ -1672,8 +1981,10 @@ async def finalize_save(
     # PREVENT DOUBLE SAVE
     # -----------------------------------------------------
 
-    if data.get("saving"):
-
+    if data.get(
+        "saving",
+        False,
+    ):
         return
 
     await state.update_data(
@@ -1690,9 +2001,12 @@ async def finalize_save(
 
             item
 
-            for item in data.get(
-                "media",
-                []
+            for item in (
+                data.get(
+                    "media",
+                    [],
+                )
+                or []
             )
 
             if item.get("file_id")
@@ -1720,21 +2034,21 @@ async def finalize_save(
         share_media = bool(
             data.get(
                 "share_media",
-                True
+                True,
             )
         )
 
         is_paid = bool(
             data.get(
                 "is_paid",
-                False
+                False,
             )
         )
 
         price = int(
             data.get(
                 "price",
-                0
+                0,
             )
             or 0
         )
@@ -1748,8 +2062,9 @@ async def finalize_save(
         review_photos = list(
             data.get(
                 "review_photos",
-                []
+                [],
             )
+            or []
         )
 
         # =================================================
@@ -1760,7 +2075,7 @@ async def finalize_save(
 
             if not data.get(
                 "is_creator",
-                False
+                False,
             ):
 
                 await state.update_data(
@@ -1801,7 +2116,9 @@ async def finalize_save(
         else:
 
             price = 0
+
             payment_provider = None
+
             review_photos = []
 
         # =================================================
@@ -1827,52 +2144,67 @@ async def finalize_save(
 
         media_count = len(media)
 
+        # =================================================
+        # JSON
+        # =================================================
+
         media_json = json.dumps(
             media,
             ensure_ascii=False,
+            separators=(
+                ",",
+                ":",
+            ),
         )
 
         review_json = json.dumps(
             review_photos,
             ensure_ascii=False,
+            separators=(
+                ",",
+                ":",
+            ),
         )
 
         # =================================================
-        # SAVE MEDIA VALUES
+        # MEDIA VALUES
         # =================================================
 
         media_values = []
 
         for item in media:
 
-            media_values.append((
+            media_values.append(
 
-                code,
+                (
 
-                item.get(
-                    "message_id"
-                ),
+                    code,
 
-                item.get(
-                    "file_id"
-                ),
+                    item.get(
+                        "message_id"
+                    ),
 
-                item.get(
-                    "type"
-                ),
+                    item.get(
+                        "file_id"
+                    ),
 
-                item.get(
-                    "file_size",
-                    0
-                ),
+                    item.get(
+                        "type"
+                    ),
 
-                title,
+                    item.get(
+                        "file_size",
+                        0,
+                    ),
 
-                item.get(
-                    "position",
-                    0
-                ),
-            ))
+                    title,
+
+                    item.get(
+                        "position",
+                        0,
+                    ),
+                )
+            )
 
         # =================================================
         # DATABASE
@@ -1908,7 +2240,9 @@ async def finalize_save(
                     """,
 
                     user_id,
+
                     username,
+
                     fullname,
                 )
 
@@ -1960,17 +2294,29 @@ async def finalize_save(
                     """,
 
                     code,
+
                     title,
+
                     fullname,
+
                     media_json,
+
                     share_media,
+
                     share_media,
+
                     user_id,
+
                     user_id,
+
                     media_count,
+
                     is_paid,
+
                     price,
+
                     payment_provider,
+
                     review_json,
                 )
 
@@ -2011,9 +2357,7 @@ async def finalize_save(
         # =================================================
 
         logger.info(
-            "FILE SAVED | "
-            "user=%s | code=%s | "
-            "media=%s | paid=%s",
+            "FILE SAVED | user=%s | code=%s | media=%s | paid=%s",
             user_id,
             code,
             media_count,
@@ -2021,7 +2365,7 @@ async def finalize_save(
         )
 
         # =================================================
-        # DELETE OLD PROGRESS MESSAGE
+        # SAVE OLD MESSAGE IDS
         # =================================================
 
         progress_id = data.get(
@@ -2031,6 +2375,10 @@ async def finalize_save(
         saving_msg_id = data.get(
             "saving_msg_id"
         )
+
+        # =================================================
+        # DELETE OLD PROGRESS
+        # =================================================
 
         for message_id in (
             progress_id,
@@ -2083,16 +2431,19 @@ async def finalize_save(
         info = []
 
         if video_count:
+
             info.append(
                 f"{video_count} Video"
             )
 
         if photo_count:
+
             info.append(
                 f"{photo_count} Photo"
             )
 
         if document_count:
+
             info.append(
                 f"{document_count} Document"
             )
@@ -2119,35 +2470,38 @@ async def finalize_save(
             mode = "🆓 FREE"
 
         # =================================================
-        # SUCCESS MESSAGE
+        # ESCAPE OUTPUT
+        # =================================================
+
+        safe_title = escape(
+            title
+        )
+
+        safe_code = escape(
+            code
+        )
+
+        # =================================================
+        # SUCCESS
         # =================================================
 
         await message.answer(
 
             (
                 "✅ <b>FILE BERHASIL DISIMPAN</b>\n\n"
-
-                f"📝 <b>Judul</b> : "
-                f"{title}\n"
-
-                f"📦 <b>Total Media</b> : "
-                f"{media_count}\n"
-
-                f"📁 <b>Isi</b> : "
-                f"{files_info}\n"
-
-                f"💎 <b>Status</b> : "
-                f"{mode}\n\n"
-
-                f"🔑 <b>Code</b> : "
-                f"<code>{code}</code>"
+                f"📝 <b>Judul</b>: {safe_title}\n"
+                f"📦 <b>Total Media</b>: {media_count}\n"
+                f"📁 <b>Isi</b>: {escape(files_info)}\n"
+                f"💎 <b>Status</b>: {mode}\n\n"
+                f"🔑 <b>Code</b>: "
+                f"<code>{safe_code}</code>"
             ),
 
             parse_mode="HTML",
         )
 
         # =================================================
-        # SEND PAID REVIEW
+        # PAID REVIEW CHANNEL
         # =================================================
 
         if is_paid and review_photos:
@@ -2175,14 +2529,14 @@ async def finalize_save(
 
             except Exception:
 
-                # Review gagal tidak membatalkan file.
+                # File database tetap aman.
                 logger.exception(
-                    "PAID REVIEW ERROR | code=%s",
+                    "PAID REVIEW FAILED AFTER FILE SAVE | code=%s",
                     code,
                 )
 
         # =================================================
-        # SEND UPLOAD LOG
+        # UPDATE CHANNEL
         # =================================================
 
         await send_upload_log(
@@ -2213,19 +2567,22 @@ async def finalize_save(
             user_id,
         )
 
-        await state.update_data(
-            saving=False
-        )
+        try:
+
+            await state.update_data(
+                saving=False
+            )
+
+        except Exception:
+            pass
 
         try:
 
             await message.answer(
 
                 "❌ <b>GAGAL MENYIMPAN FILE</b>\n\n"
-
                 "Terjadi kesalahan saat "
                 "menyimpan file ke database.\n\n"
-
                 "Silakan coba lagi.",
 
                 parse_mode="HTML",
@@ -2234,5 +2591,6 @@ async def finalize_save(
         except Exception:
 
             logger.exception(
-                "ERROR MESSAGE FAILED"
+                "ERROR MESSAGE FAILED | user=%s",
+                user_id,
             )
