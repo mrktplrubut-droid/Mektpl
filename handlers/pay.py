@@ -2,6 +2,7 @@ import html
 import json
 import logging
 import secrets
+from typing import Any
 
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
@@ -33,7 +34,7 @@ router = Router()
 MEDIA_TTL = 3600
 PER_PAGE = 10
 
-# Anti spam tombol "Saya Sudah Bayar"
+# Lama lock "Saya Sudah Bayar"
 VERIFY_REQUEST_TTL = 300
 
 SUCCESS_STATUSES = {
@@ -52,6 +53,10 @@ FAILED_STATUSES = {
     "rejected",
 }
 
+# Telegram callback_data maksimal 64 bytes.
+# Code panjang tidak boleh langsung dimasukkan ke callback.
+CALLBACK_TOKEN_TTL = 900
+
 
 # ============================================================
 # FSM
@@ -62,7 +67,7 @@ class RejectPaymentState(StatesGroup):
 
 
 # ============================================================
-# HELPERS
+# BASIC HELPERS
 # ============================================================
 
 def mask_user_id(user_id: int) -> str:
@@ -74,24 +79,39 @@ def mask_user_id(user_id: int) -> str:
     return uid[:2] + "****" + uid[-2:]
 
 
-def format_rupiah(amount) -> str:
+def format_rupiah(amount: Any) -> str:
     try:
         return f"Rp {int(amount):,}".replace(",", ".")
     except Exception:
         return f"Rp {amount}"
 
 
-def normalize_status(value) -> str:
+def normalize_status(value: Any) -> str:
     return str(value or "").strip().lower()
+
+
+def clean_html(value: Any) -> str:
+    return html.escape(str(value or ""))
+
+
+def safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return default
 
 
 def get_admin_ids() -> set[int]:
     """
-    ADMIN_IDS aman jika:
-    - list/tuple/set: [123, 456]
-    - string: "123,456"
-    - satu ID: 123
+    Mendukung:
+
+    ADMIN_IDS = [123, 456]
+    ADMIN_IDS = (123, 456)
+    ADMIN_IDS = {123, 456}
+    ADMIN_IDS = "123,456"
+    ADMIN_IDS = 123
     """
+
     try:
         raw = ADMIN_IDS
 
@@ -107,7 +127,7 @@ def get_admin_ids() -> set[int]:
         else:
             values = [raw]
 
-        result = set()
+        result: set[int] = set()
 
         for value in values:
             value = str(value).strip()
@@ -134,21 +154,60 @@ def is_admin(user_id: int) -> bool:
         return False
 
 
-def clean_html(value) -> str:
-    return html.escape(str(value or ""))
+# ============================================================
+# CALLBACK TOKEN
+# ============================================================
+
+async def create_callback_token(
+    prefix: str,
+    data: dict,
+) -> str:
+    """
+    Menyimpan data callback di Redis agar callback_data
+    tidak melebihi batas 64 bytes Telegram.
+    """
+
+    token = secrets.token_urlsafe(10)
+
+    key = f"cb:{prefix}:{token}"
+
+    await safe_set(
+        key,
+        data,
+        ex=CALLBACK_TOKEN_TTL,
+    )
+
+    return token
 
 
-def safe_int(value, default=0) -> int:
+async def get_callback_token(
+    prefix: str,
+    token: str,
+):
+    if not token:
+        return None
+
     try:
-        return int(value)
+        return await safe_get(
+            f"cb:{prefix}:{token}"
+        )
     except Exception:
-        return default
+        logger.exception(
+            "GET CALLBACK TOKEN ERROR | prefix=%s",
+            prefix,
+        )
+        return None
 
 
-def parse_media(media_data):
+# ============================================================
+# MEDIA PARSER
+# ============================================================
+
+def parse_media(media_data: Any) -> list[dict]:
     """
     Normalize media JSON/list menjadi list dictionary.
     """
+
     if isinstance(media_data, str):
         try:
             media_data = json.loads(media_data)
@@ -159,7 +218,7 @@ def parse_media(media_data):
     if not isinstance(media_data, list):
         return []
 
-    result = []
+    result: list[dict] = []
 
     for item in media_data:
         if not isinstance(item, dict):
@@ -167,12 +226,15 @@ def parse_media(media_data):
 
         message_id = item.get("message_id")
 
-        if not message_id:
+        if message_id is None:
             continue
 
         try:
             message_id = int(message_id)
         except (ValueError, TypeError):
+            continue
+
+        if message_id <= 0:
             continue
 
         result.append({
@@ -183,7 +245,16 @@ def parse_media(media_data):
     return result
 
 
+# ============================================================
+# DATABASE HELPERS
+# ============================================================
+
 async def get_file_by_code(code: str):
+    if not code:
+        return None
+
+    code = str(code).strip()
+
     if not code:
         return None
 
@@ -194,11 +265,14 @@ async def get_file_by_code(code: str):
         WHERE code=$1
         LIMIT 1
         """,
-        str(code).strip(),
+        code,
     )
 
 
-async def get_pending_purchase(user_id: int, code: str):
+async def get_pending_purchase(
+    user_id: int,
+    code: str,
+):
     return await fetchrow(
         """
         SELECT *
@@ -209,8 +283,27 @@ async def get_pending_purchase(user_id: int, code: str):
         ORDER BY id DESC
         LIMIT 1
         """,
-        user_id,
-        code,
+        int(user_id),
+        str(code).strip(),
+    )
+
+
+async def get_paid_purchase(
+    user_id: int,
+    code: str,
+):
+    return await fetchrow(
+        """
+        SELECT *
+        FROM file_purchases
+        WHERE user_id=$1
+          AND file_code=$2
+          AND status='paid'
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        int(user_id),
+        str(code).strip(),
     )
 
 
@@ -220,8 +313,8 @@ async def get_pending_purchase(user_id: int, code: str):
 
 async def send_upgrade_notif(
     bot,
-    user_id,
-    tier,
+    user_id: int,
+    tier: str,
 ):
     try:
         tier = str(tier or "").lower()
@@ -261,15 +354,22 @@ async def send_upgrade_notif(
 # MANUAL PAYMENT KEYBOARD
 # ============================================================
 
-def manual_payment_keyboard(code):
-    safe_code = str(code).strip()
+async def manual_payment_keyboard(
+    code: str,
+):
+    token = await create_callback_token(
+        "manualcheck",
+        {
+            "code": str(code).strip(),
+        },
+    )
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text="✅ Saya Sudah Bayar",
-                    callback_data=f"manualcheck:{safe_code}",
+                    callback_data=f"manualcheck:{token}",
                 )
             ],
             [
@@ -287,9 +387,9 @@ def manual_payment_keyboard(code):
 # ============================================================
 
 def media_keyboard(
-    media_id,
-    page,
-    total,
+    media_id: str,
+    page: int,
+    total: int,
 ):
     max_page = max(
         1,
@@ -392,7 +492,7 @@ async def choose_payment(
             show_alert=True,
         )
 
-    # SEMUA PAYMENT → QR MANUAL
+    # Semua pembayaran diarahkan ke QR MANUAL.
     return await show_manual_payment(
         call,
         code,
@@ -457,6 +557,7 @@ async def show_manual_payment(
     file,
 ):
     user_id = int(call.from_user.id)
+    code = str(code).strip()
 
     # --------------------------------------------------------
     # QR VALIDATION
@@ -464,7 +565,7 @@ async def show_manual_payment(
 
     if not MANUAL_QR_FILE_ID:
         logger.error(
-            "MANUAL_QR_FILE_ID belum dikonfigurasi"
+            "MANUAL_QR_FILE_ID BELUM DIKONFIGURASI"
         )
 
         return await call.answer(
@@ -488,16 +589,7 @@ async def show_manual_payment(
     # ALREADY PAID
     # --------------------------------------------------------
 
-    paid = await fetchrow(
-        """
-        SELECT id
-        FROM file_purchases
-        WHERE user_id=$1
-          AND file_code=$2
-          AND status='paid'
-        ORDER BY id DESC
-        LIMIT 1
-        """,
+    paid = await get_paid_purchase(
         user_id,
         code,
     )
@@ -524,8 +616,7 @@ async def show_manual_payment(
     if not existing:
         payment_id = (
             f"MANUAL-{user_id}-"
-            f"{code}-"
-            f"{secrets.token_hex(6)}"
+            f"{secrets.token_hex(8)}"
         )
 
         try:
@@ -577,6 +668,47 @@ async def show_manual_payment(
         )
 
     # --------------------------------------------------------
+    # EXISTING QR
+    # --------------------------------------------------------
+
+    old_qr_message_id = existing.get(
+        "qr_message_id"
+    )
+
+    old_qr_chat_id = existing.get(
+        "qr_chat_id"
+    )
+
+    # Jangan membuat QR baru berkali-kali.
+    if old_qr_message_id and old_qr_chat_id:
+        try:
+            await call.bot.send_message(
+                user_id,
+                (
+                    "⏳ <b>Transaksi pembayaran masih aktif.</b>\n\n"
+                    f"📦 <b>{clean_html(file.get('title'))}</b>\n"
+                    f"💰 <b>{format_rupiah(price)}</b>\n\n"
+                    "Silakan gunakan QR pembayaran yang "
+                    "sudah dikirim sebelumnya.\n\n"
+                    "Tekan <b>✅ Saya Sudah Bayar</b> "
+                    "setelah pembayaran selesai."
+                ),
+                parse_mode="HTML",
+            )
+
+            return await call.answer(
+                "⏳ Transaksi pembayaran masih aktif.",
+                show_alert=True,
+            )
+
+        except Exception:
+            logger.warning(
+                "EXISTING QR CHECK FAILED | purchase=%s",
+                existing.get("id"),
+                exc_info=True,
+            )
+
+    # --------------------------------------------------------
     # CAPTION
     # --------------------------------------------------------
 
@@ -597,7 +729,16 @@ async def show_manual_payment(
         "2️⃣ Bayar sesuai nominal\n"
         "3️⃣ Pastikan pembayaran berhasil\n"
         "4️⃣ Tekan tombol <b>✅ Saya Sudah Bayar</b>\n\n"
-        "⏳ Pembayaran akan diverifikasi admin."
+        "⏳ Pembayaran akan diverifikasi admin.\n"
+        "⚠️ Jangan melakukan pembayaran dua kali."
+    )
+
+    # --------------------------------------------------------
+    # KEYBOARD
+    # --------------------------------------------------------
+
+    keyboard = await manual_payment_keyboard(
+        code
     )
 
     # --------------------------------------------------------
@@ -609,7 +750,7 @@ async def show_manual_payment(
             photo=MANUAL_QR_FILE_ID,
             caption=caption,
             parse_mode="HTML",
-            reply_markup=manual_payment_keyboard(code),
+            reply_markup=keyboard,
         )
 
         await execute(
@@ -619,6 +760,7 @@ async def show_manual_payment(
                 qr_message_id=$1,
                 qr_chat_id=$2
             WHERE id=$3
+              AND status='pending'
             """,
             msg.message_id,
             msg.chat.id,
@@ -651,12 +793,28 @@ async def manual_check(
     call: CallbackQuery,
 ):
     try:
-        code = call.data.split(":", 1)[1].strip()
+        token = call.data.split(":", 1)[1].strip()
     except (AttributeError, IndexError):
         return await call.answer(
-            "❌ Code tidak valid.",
+            "❌ Permintaan tidak valid.",
             show_alert=True,
         )
+
+    callback_data = await get_callback_token(
+        "manualcheck",
+        token,
+    )
+
+    if not callback_data:
+        return await call.answer(
+            "❌ Tombol sudah expired.\n"
+            "Silakan buka pembayaran kembali.",
+            show_alert=True,
+        )
+
+    code = str(
+        callback_data.get("code") or ""
+    ).strip()
 
     user_id = int(call.from_user.id)
 
@@ -688,16 +846,7 @@ async def manual_check(
     )
 
     if not purchase:
-        paid = await fetchrow(
-            """
-            SELECT id
-            FROM file_purchases
-            WHERE user_id=$1
-              AND file_code=$2
-              AND status='paid'
-            ORDER BY id DESC
-            LIMIT 1
-            """,
+        paid = await get_paid_purchase(
             user_id,
             code,
         )
@@ -713,15 +862,22 @@ async def manual_check(
             show_alert=True,
         )
 
-    purchase_id = int(purchase["id"])
+    purchase_id = safe_int(
+        purchase.get("id")
+    )
+
+    if purchase_id <= 0:
+        return await call.answer(
+            "❌ ID transaksi tidak valid.",
+            show_alert=True,
+        )
 
     # --------------------------------------------------------
     # ANTI DUPLICATE ADMIN REQUEST
     # --------------------------------------------------------
 
     lock_key = (
-        f"manualverify:"
-        f"{purchase_id}"
+        f"manualverify:{purchase_id}"
     )
 
     try:
@@ -746,6 +902,7 @@ async def manual_check(
         )
 
     except Exception:
+        # Redis gagal bukan berarti payment gagal.
         logger.warning(
             "VERIFY REDIS LOCK ERROR",
             exc_info=True,
@@ -807,11 +964,13 @@ async def manual_check(
             )
 
     if sent == 0:
-        # Hapus lock supaya user bisa mencoba lagi
+        # Lock dibuat singkat supaya user bisa mencoba kembali.
         try:
             await safe_set(
                 lock_key,
-                None,
+                {
+                    "failed": True,
+                },
                 ex=1,
             )
         except Exception:
@@ -845,7 +1004,15 @@ async def finish_payment(
     invoice,
     message,
 ):
-    purchase_id = int(purchase["id"])
+    purchase_id = safe_int(
+        purchase.get("id")
+    )
+
+    if purchase_id <= 0:
+        logger.error(
+            "INVALID PURCHASE ID"
+        )
+        return False
 
     try:
         # ----------------------------------------------------
@@ -966,6 +1133,7 @@ async def finish_payment(
                                 0
                             ) + 1
                         ),
+
                     completed =
                         (
                             LEAST(
@@ -976,6 +1144,7 @@ async def finish_payment(
                                 ) + 1
                             ) >= 3
                         ),
+
                     completed_at =
                         CASE
                             WHEN LEAST(
@@ -991,9 +1160,11 @@ async def finish_payment(
                             )
                             ELSE completed_at
                         END
+
                 WHERE code=$1
                   AND user_id=$2
                   AND completed=FALSE
+
                 RETURNING
                     user_id,
                     purchase_count,
@@ -1045,7 +1216,7 @@ async def finish_payment(
                 "owner_id"
             )
 
-            if owner_id:
+            if owner_id and income > 0:
                 await execute(
                     """
                     UPDATE users
@@ -1122,15 +1293,17 @@ async def finish_payment(
                     purchase["user_id"]
                 )
 
+                buy_url = (
+                    "https://t.me/mktplbot"
+                    f"?start={file['code']}"
+                )
+
                 keyboard = InlineKeyboardMarkup(
                     inline_keyboard=[
                         [
                             InlineKeyboardButton(
                                 text="🛒 Buy Now",
-                                url=(
-                                    "https://t.me/mktplbot"
-                                    f"?start={file['code']}"
-                                ),
+                                url=buy_url,
                             )
                         ]
                     ]
@@ -1145,7 +1318,9 @@ async def finish_payment(
                         f"📁 Code: "
                         f"<code>{clean_html(file.get('code'))}</code>\n"
                         f"👤 User: "
-                        f"<code>{masked}</code>"
+                        f"<code>{masked}</code>\n"
+                        f"💰 Harga: "
+                        f"<b>{format_rupiah(purchase.get('paid_price'))}</b>"
                     ),
                     parse_mode="HTML",
                     reply_markup=keyboard,
@@ -1243,7 +1418,6 @@ async def approve_manual(
         purchase_id = int(
             call.data.split(":", 1)[1]
         )
-
     except (ValueError, IndexError):
         return await call.answer(
             "❌ ID transaksi tidak valid.",
@@ -1281,9 +1455,15 @@ async def approve_manual(
         "⏳ Memproses pembayaran..."
     )
 
-    user_id = int(
-        purchase["user_id"]
+    user_id = safe_int(
+        purchase.get("user_id")
     )
+
+    if user_id <= 0:
+        return await call.answer(
+            "❌ User transaksi tidak valid.",
+            show_alert=True,
+        )
 
     # --------------------------------------------------------
     # USER PROCESSING
@@ -1313,7 +1493,7 @@ async def approve_manual(
         call.bot,
         purchase,
         file,
-        purchase["payment_id"],
+        purchase.get("payment_id"),
         user_message,
     )
 
@@ -1337,7 +1517,8 @@ async def approve_manual(
                 f"🔑 Code: "
                 f"<code>{clean_html(file.get('code'))}</code>\n"
                 f"💰 Harga: "
-                f"<b>{format_rupiah(purchase.get('paid_price'))}</b>"
+                f"<b>{format_rupiah(purchase.get('paid_price'))}</b>\n\n"
+                "📦 Media sudah dikirim ke user."
             ),
             parse_mode="HTML",
             reply_markup=None,
@@ -1371,7 +1552,6 @@ async def reject_manual(
         purchase_id = int(
             call.data.split(":", 1)[1]
         )
-
     except (ValueError, IndexError):
         return await call.answer(
             "❌ ID transaksi tidak valid.",
@@ -1464,17 +1644,20 @@ async def cancel_reject_reason(
 
     await state.clear()
 
-    await message.answer(
-        (
+    if purchase_id:
+        text = (
             "↩️ <b>Reject dibatalkan.</b>\n\n"
-            + (
-                f"🧾 Transaksi <code>{purchase_id}</code> "
-                "masih berstatus <b>pending</b>."
-                if purchase_id
-                else
-                "Silakan ulangi proses Reject."
-            )
-        ),
+            f"🧾 Transaksi <code>{purchase_id}</code> "
+            "masih berstatus <b>pending</b>."
+        )
+    else:
+        text = (
+            "↩️ <b>Reject dibatalkan.</b>\n\n"
+            "Silakan ulangi proses Reject."
+        )
+
+    await message.answer(
+        text,
         parse_mode="HTML",
     )
 
@@ -1562,11 +1745,14 @@ async def receive_reject_reason(
             "❌ Transaksi sudah diproses oleh admin lain."
         )
 
-    user_id = int(
-        rejected["user_id"]
+    user_id = safe_int(
+        rejected.get("user_id")
     )
 
-    code = rejected["file_code"]
+    code = str(
+        rejected.get("file_code") or ""
+    )
+
     safe_reason = clean_html(reason)
 
     # --------------------------------------------------------
