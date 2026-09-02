@@ -16,6 +16,7 @@ from utils.cashi import Cashi
 
 from .pay import (
     finish_payment,
+    CHECK_LOCK,
     SUCCESS_STATUSES,
     FAILED_STATUSES,
     normalize_status,
