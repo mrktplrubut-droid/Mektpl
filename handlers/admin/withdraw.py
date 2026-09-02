@@ -306,14 +306,25 @@ async def approve_withdraw(
             await conn.execute(
                 """
                 UPDATE withdraws
-
                 SET
                     status='success',
-                    processed_at=NOW()
-
+                    processed_at=NOW(),
+                    paid_at=NOW(),
+                    updated_at=NOW()
                 WHERE id=$1
                 """,
                 withdraw_id
+            )
+
+            await conn.execute(
+                """
+                UPDATE users
+                SET total_withdraw = COALESCE(total_withdraw,0) + $1,
+                    updated_at = NOW()
+                WHERE user_id=$2
+                """,
+                receive,
+                withdraw["user_id"]
             )
 
 
@@ -518,7 +529,8 @@ async def process_reject(call: CallbackQuery):
                 SET
                     status='rejected',
                     admin_note=$1,
-                    processed_at=NOW()
+                    processed_at=NOW(),
+                    updated_at=NOW()
 
                 WHERE id=$2
                 """,
