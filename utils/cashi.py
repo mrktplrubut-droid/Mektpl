@@ -6,6 +6,9 @@ import httpx
 from config import (
     CASHI_API_KEY,
     CASHI_BASE_URL,
+    CASHI_PAYMENT_CHANNEL,
+    CASHI_MIN_AMOUNT,
+    CASHI_MAX_AMOUNT,
 )
 logger = logging.getLogger(__name__)
 BASE_URL = CASHI_BASE_URL.rstrip("/")
@@ -66,14 +69,14 @@ class Cashi:
             )
             return None
         # Cashi minimum amount according to documentation
-        if amount < 2000:
+        if amount < CASHI_MIN_AMOUNT:
             logger.error(
                 "CASHI AMOUNT BELOW MINIMUM: %s",
                 amount,
             )
             return None
         # Cashi maximum amount according to documentation
-        if amount > 10_000_000:
+        if amount > CASHI_MAX_AMOUNT:
             logger.error(
                 "CASHI AMOUNT ABOVE MAXIMUM: %s",
                 amount,
@@ -86,7 +89,7 @@ class Cashi:
         body = {
             "amount": amount,
             "order_id": order_id,
-            "kode_channel": "QRIS_CUSTOM",
+            "kode_channel": CASHI_PAYMENT_CHANNEL,
         }
         logger.info(
             "CASHI CREATE | order_id=%s | amount=%s",
