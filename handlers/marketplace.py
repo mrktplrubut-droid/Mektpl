@@ -1,121 +1,284 @@
-import math
 from aiogram import Router, F
-from aiogram.types import CallbackQuery, Message, InlineKeyboardButton, InlineKeyboardMarkup
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import StatesGroup, State
-from database import get_pool
-from utils.user_lang import get_user_language
+from aiogram.types import CallbackQuery
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+from database import fetch, fetchrow
 
 router = Router()
 
-SERVERS = {
-    "1": {"id": "1", "id_name": "Server 1 — Media Umum", "en_name": "Server 1 — General Media"},
-    "2": {"id": "2", "id_name": "Server 2 — Media Remaja Non-Seksual", "en_name": "Server 2 — Non-Sexual Teen Media"},
-    "3": {"id": "3", "id_name": "Server 3 — Media Dewasa 18+ Non-Eksplisit", "en_name": "Server 3 — 18+ Non-Explicit Media"},
-}
-
-class MarketSearch(StatesGroup):
-    waiting = State()
-
-def price(v):
-    return f"Rp {int(v or 0):,}".replace(",", ".")
-
-def server_name(server, lang):
-    s = SERVERS.get(str(server), SERVERS["1"])
-    return s["en_name"] if lang == "en" else s["id_name"]
-
-async def render_server(call, server, sort="new", search=None):
-    lang = await get_user_language(call.from_user.id)
-    pool = await get_pool()
-    server = str(server)
-    if server not in SERVERS:
-        return await call.answer("Invalid server." if lang == "en" else "Server tidak valid.", show_alert=True)
-    where = ["COALESCE(market_server,'1')=$1"]
-    args = [server]
-    if search:
-        where.append("(title ILIKE $2 OR code ILIKE $2 OR COALESCE(description,'') ILIKE $2)")
-        args.append(f"%{search[:80]}%")
-    order = {
-        "best": "COALESCE(sold,0) DESC, COALESCE(rating,0) DESC, created_at DESC",
-        "top": "(COALESCE(views,0)+COALESCE(sold,0)*10+COALESCE(favorite_count,0)*5+COALESCE(rating,0)*COALESCE(review_count,0)*3) DESC, created_at DESC",
-        "rating": "COALESCE(rating,0) DESC, COALESCE(review_count,0) DESC, COALESCE(sold,0) DESC",
-        "favorite": "COALESCE(favorite_count,0) DESC, COALESCE(sold,0) DESC, created_at DESC",
-        "new": "created_at DESC",
-    }.get(sort, "created_at DESC")
-    rows = await pool.fetch(f"""
-        SELECT code,title,price,media_count,created_at,
-               COALESCE(sold,0) sold, COALESCE(views,0) views,
-               COALESCE(rating,0) rating, COALESCE(review_count,0) review_count,
-               COALESCE(favorite_count,0) favorite_count
-        FROM files WHERE {' AND '.join(where)}
-        ORDER BY {order} LIMIT 20
-    """, *args)
-    labels = {
-        "id": ["🛒 MARKETPLACE", "Pilih server terlebih dahulu:", "🔍 Cari File", "🔥 Terlaris", "🏆 Top 10", "🆕 Terbaru", "⭐ Rating", "❤️ Favorit", "⬅️ Kembali"],
-        "en": ["🛒 MARKETPLACE", "Choose a server first:", "🔍 Search Files", "🔥 Best Sellers", "🏆 Top 10", "🆕 Newest", "⭐ Top Rated", "❤️ Favorites", "⬅️ Back"],
-    }[lang]
-    text = f"<b>{labels[0]}</b>\n━━━━━━━━━━━━━━━━━━\n\n{labels[1]}\n\n<b>{server_name(server,lang)}</b>\n\n"
-    if search:
-        text += ("🔎 Search: " if lang == "en" else "🔎 Pencarian: ") + f"<b>{search}</b>\n\n"
-    if not rows:
-        text += "📭 No files found." if lang == "en" else "📭 Belum ada file di server ini."
-    else:
-        for i,r in enumerate(rows,1):
-            text += f"{i}. <b>{r['title'] or r['code']}</b>\n💰 {price(r['price']) if r['price'] else ('Free' if lang=='en' else 'Gratis')} • 📁 {r['media_count'] or 0}\n🔥 {r['sold']} • ⭐ {float(r['rating'] or 0):.1f} ({r['review_count']}) • ❤️ {r['favorite_count']}\n\n"
-    kb=[]
-    for r in rows:
-        kb.append([InlineKeyboardButton(text=f"📦 {str(r['title'] or r['code'])[:28]}", callback_data=f"market:{r['code']}")])
-    kb += [
-        [InlineKeyboardButton(text=labels[2], callback_data=f"mkt:search:{server}"), InlineKeyboardButton(text=labels[3], callback_data=f"mkt:list:{server}:best")],
-        [InlineKeyboardButton(text=labels[4], callback_data=f"mkt:list:{server}:top"), InlineKeyboardButton(text=labels[5], callback_data=f"mkt:list:{server}:new")],
-        [InlineKeyboardButton(text=labels[6], callback_data=f"mkt:list:{server}:rating"), InlineKeyboardButton(text=labels[7], callback_data=f"mkt:list:{server}:favorite")],
-        [InlineKeyboardButton(text="🔄 Servers", callback_data="marketplace") if lang=="en" else InlineKeyboardButton(text="🔄 Pilih Server", callback_data="marketplace")]
-    ]
-    await call.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
 @router.callback_query(F.data == "marketplace")
 async def marketplace_menu(call: CallbackQuery):
-    lang = await get_user_language(call.from_user.id)
-    text = ("🛒 <b>MARKETPLACE</b>\n━━━━━━━━━━━━━━━━━━\n\nChoose a server:" if lang=="en" else "🛒 <b>MARKETPLACE</b>\n━━━━━━━━━━━━━━━━━━\n\nPilih server:")
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=server_name("1",lang), callback_data="mkt:server:1")],
-        [InlineKeyboardButton(text=server_name("2",lang), callback_data="mkt:server:2")],
-        [InlineKeyboardButton(text=server_name("3",lang), callback_data="mkt:server:3")],
-        [InlineKeyboardButton(text="🏠 Home" if lang=="id" else "🏠 Home", callback_data="home")]
-    ])
-    await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+
     await call.answer()
 
-@router.callback_query(F.data.startswith("mkt:server:"))
-async def select_server(call: CallbackQuery):
-    await call.answer()
-    await render_server(call, call.data.rsplit(":",1)[1])
+    # ===============================
+    # STATISTIK MARKETPLACE
+    # ===============================
 
-@router.callback_query(F.data.startswith("mkt:list:"))
-async def list_server(call: CallbackQuery):
-    _,_,server,sort = call.data.split(":",3)
-    await call.answer()
-    await render_server(call, server, sort)
+    stats = await fetchrow(
+        """
+        SELECT
+            COUNT(*) AS total_files,
+            COUNT(DISTINCT seller_id) AS total_sellers,
+            COALESCE(SUM(sold), 0) AS total_sold
+        FROM files
+        WHERE is_paid = true
+        """
+    )
 
-@router.callback_query(F.data.startswith("mkt:search:"))
-async def search_start(call: CallbackQuery, state: FSMContext):
-    lang=await get_user_language(call.from_user.id); server=call.data.rsplit(":",1)[1]
-    await state.update_data(market_server=server); await state.set_state(MarketSearch.waiting)
-    await call.message.edit_text("🔍 <b>SEARCH FILES</b>\n\nSend title, code, or keyword:" if lang=="en" else "🔍 <b>CARI FILE</b>\n\nKirim judul, code, atau kata kunci:", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel" if lang=="en" else "❌ Batal", callback_data=f"mkt:server:{server}")]]))
-    await call.answer()
+    # ===============================
+    # TRENDING FILE
+    # ===============================
+    #
+    # Score:
+    #
+    # views                = 1x
+    # sold                 = 10x
+    # favorite             = 5x
+    # rating x review      = 3x
+    #
+    # File yang benar-benar
+    # diminati akan naik.
+    # ===============================
 
-@router.message(MarketSearch.waiting)
-async def search_process(message: Message, state: FSMContext):
-    data=await state.get_data(); server=str(data.get("market_server","1")); q=(message.text or "").strip()
-    await state.clear()
-    # Message cannot be edited; create a lightweight callback-like renderer.
-    lang=await get_user_language(message.from_user.id); pool=await get_pool()
-    rows=await pool.fetch("""SELECT code,title,price,media_count,COALESCE(sold,0)sold,COALESCE(rating,0)rating,COALESCE(review_count,0)review_count,COALESCE(favorite_count,0)favorite_count FROM files WHERE COALESCE(market_server,'1')=$1 AND (title ILIKE $2 OR code ILIKE $2 OR COALESCE(description,'') ILIKE $2) ORDER BY created_at DESC LIMIT 20""",server,f"%{q[:80]}%")
-    text=("🔍 <b>SEARCH RESULTS</b>" if lang=="en" else "🔍 <b>HASIL PENCARIAN</b>")+f"\n━━━━━━━━━━━━━━━━━━\n\n<b>{q}</b>\n\n"
-    if not rows: text += "📭 No files found." if lang=="en" else "📭 File tidak ditemukan."
-    kb=[]
-    for r in rows:
-        text += f"📦 <b>{r['title'] or r['code']}</b>\n💰 {price(r['price']) if r['price'] else ('Free' if lang=='en' else 'Gratis')} • ⭐ {float(r['rating'] or 0):.1f} • 🔥 {r['sold']}\n\n"
-        kb.append([InlineKeyboardButton(text=f"📦 {str(r['title'] or r['code'])[:28]}", callback_data=f"market:{r['code']}")])
-    kb.append([InlineKeyboardButton(text="⬅️ Back" if lang=="en" else "⬅️ Kembali", callback_data=f"mkt:server:{server}")])
-    await message.answer(text,parse_mode="HTML",reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    files = await fetch(
+        """
+        SELECT
+            code,
+            title,
+            price,
+            media_count,
+
+            COALESCE(sold, 0) AS sold,
+            COALESCE(views, 0) AS views,
+            COALESCE(favorite_count, 0) AS favorite_count,
+            COALESCE(likes, 0) AS likes,
+            COALESCE(dislikes, 0) AS dislikes,
+            COALESCE(rating, 0) AS rating,
+            COALESCE(review_count, 0) AS review_count,
+
+            (
+                COALESCE(views, 0)
+                + (COALESCE(sold, 0) * 10)
+                + (COALESCE(favorite_count, 0) * 5)
+                + (
+                    COALESCE(rating, 0)
+                    * COALESCE(review_count, 0)
+                    * 3
+                )
+            ) AS trending_score
+
+        FROM files
+
+        WHERE is_paid = true
+
+        ORDER BY
+            trending_score DESC,
+            created_at DESC
+
+        LIMIT 5
+        """
+    )
+
+    # ===============================
+    # HEADER
+    # ===============================
+
+    text = (
+        "🛒 <b>MARKETPLACE</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+
+        f"📦 <b>Total File :</b> {stats['total_files']}\n"
+        f"👥 <b>Seller :</b> {stats['total_sellers']}\n"
+        f"🛍 <b>Terjual :</b> {stats['total_sold']}\n\n"
+
+        "🔥 <b>TRENDING SEKARANG</b>\n"
+        "File yang sedang banyak diminati pengguna.\n\n"
+    )
+
+    kb = InlineKeyboardBuilder()
+
+    # ===============================
+    # JIKA KOSONG
+    # ===============================
+
+    if not files:
+
+        text += (
+            "📭 Belum ada file yang dijual.\n\n"
+            "Jadilah creator pertama di marketplace!"
+        )
+
+    else:
+
+        for index, f in enumerate(files, start=1):
+
+            # ===============================
+            # MEDALI
+            # ===============================
+
+            if index == 1:
+                rank = "🥇"
+
+            elif index == 2:
+                rank = "🥈"
+
+            elif index == 3:
+                rank = "🥉"
+
+            else:
+                rank = f"{index}️⃣"
+
+            # ===============================
+            # DATA
+            # ===============================
+
+            title = f["title"] or "Tanpa Judul"
+
+            price = f["price"] or 0
+
+            media_count = f["media_count"] or 0
+
+            views = f["views"] or 0
+
+            favorites = f["favorite_count"] or 0
+            likes = f["likes"] or 0
+            dislikes = f["dislikes"] or 0
+
+            sold = f["sold"] or 0
+
+            review_count = f["review_count"] or 0
+
+            rating = float(
+                f["rating"] or 0
+            )
+
+            score = int(
+                f["trending_score"] or 0
+            )
+
+            # ===============================
+            # FORMAT HARGA
+            # ===============================
+
+            if price:
+
+                price_text = (
+                    f"Rp {price:,}"
+                    .replace(",", ".")
+                )
+
+            else:
+
+                price_text = "Gratis"
+
+            # ===============================
+            # FILE CARD
+            # ===============================
+
+            text += (
+                f"{rank} <b>{title}</b>\n"
+                f"💰 {price_text}\n"
+                f"📁 {media_count} Media\n"
+                f"👁 {views:,} "
+                f"| 👍 {likes:,} "
+                f"| 👎 {dislikes:,}\n"
+                f"❤️ {favorites:,} "
+                f"| 🔥 {sold:,}\n"
+                f"⭐ {rating:.1f} "
+                f"({review_count} ulasan)\n"
+                f"📈 Score: {score:,}\n\n"
+            )
+
+            # ===============================
+            # BUTTON FILE
+            # ===============================
+
+            kb.button(
+                text=f"📦 {title[:25]}",
+                callback_data=f"market:{f['code']}"
+            )
+
+    # ===============================
+    # MENU MARKETPLACE
+    # ===============================
+
+    kb.button(
+        text="🔍 Cari File",
+        callback_data="search_code"
+    )
+
+    kb.button(
+        text="🔥 Terlaris",
+        callback_data="top_code"
+    )
+
+    kb.button(
+        text="🆕 Terbaru",
+        callback_data="new_code"
+    )
+
+    kb.button(
+        text="📂 Kategori",
+        callback_data="category_code"
+    )
+
+    kb.button(
+        text="🏷 Semua File",
+        callback_data="market_all"
+    )
+
+    kb.button(
+        text="⭐ Rating",
+        callback_data="market_rating"
+    )
+
+    kb.button(
+        text="💬 Review Terbanyak",
+        callback_data="market_reviews"
+    )
+
+    kb.button(
+        text="❤️ Favorit",
+        callback_data="market_favorite"
+    )
+
+    kb.button(
+        text="🛍 Pembelian Saya",
+        callback_data="market_purchase"
+    )
+
+    kb.button(
+        text="🏠 Home",
+        callback_data="home"
+    )
+
+    # ===============================
+    # LAYOUT
+    # ===============================
+
+    kb.adjust(
+        1,  # file 1
+        1,  # file 2
+        1,  # file 3
+        1,  # file 4
+        1,  # file 5
+
+        2,  # cari + terlaris
+        2,  # terbaru + kategori
+        2,  # semua + rating
+        2,  # review + favorit
+        2,  # pembelian + home
+        1
+    )
+
+    # ===============================
+    # SEND
+    # ===============================
+
+    await call.message.edit_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=kb.as_markup()
+    )

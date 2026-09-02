@@ -25,7 +25,6 @@ async def market_detail(call: CallbackQuery):
             title,
             description,
             category,
-            COALESCE(market_server,'1') AS market_server,
             price,
             media_count,
             owner_id,
@@ -86,7 +85,7 @@ async def market_detail(call: CallbackQuery):
         text = (
             "📦 <b>CODE DETAILS</b>\n━━━━━━━━━━━━━━━━━━\n\n"
             f"📝 <b>{file['title']}</b>\n\n"
-            f"🗂 <b>Server:</b> {file['market_server']}\n" + f"📂 <b>Category:</b> {file['category'] or 'Other'}\n"
+            f"📂 <b>Category:</b> {file['category'] or 'Other'}\n"
             f"📁 <b>Total Media:</b> {file['media_count']}\n"
             f"💰 <b>Price:</b> Rp {price:,}\n"
             f"👤 <b>Seller:</b> <code>{file['owner_id']}</code>\n\n"
@@ -105,7 +104,7 @@ async def market_detail(call: CallbackQuery):
 
         f"📝 <b>{file['title']}</b>\n\n"
 
-        f"🗂 <b>Server :</b> {file['market_server']}\n" + f"📂 <b>Kategori :</b> {file['category'] or 'Lainnya'}\n"
+        f"📂 <b>Kategori :</b> {file['category'] or 'Lainnya'}\n"
         f"📁 <b>Total Media :</b> {file['media_count']}\n"
         f"💰 <b>Harga :</b> Rp {price:,}\n"
         f"👤 <b>Seller :</b> <code>{file['owner_id']}</code>\n\n"

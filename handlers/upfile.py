@@ -82,8 +82,6 @@ class UploadState(StatesGroup):
 
     upload = State()
 
-    wait_server = State()
-
     wait_title = State()
 
     wait_price = State()
@@ -402,8 +400,6 @@ async def start_upload(
         is_paid=False,
 
         price=0,
-
-        market_server=None,
 
         payment_provider=None,
 
@@ -892,44 +888,40 @@ async def choose_share_mode(
 @router.callback_query(
     F.data.startswith("share_")
 )
-async def share_handler(call: CallbackQuery, state: FSMContext):
+async def share_handler(
+    call: CallbackQuery,
+    state: FSMContext,
+):
+
     await call.answer()
+
     user_id = call.from_user.id
+
     async with user_lock(user_id):
-        share = call.data == "share_yes"
-        await state.update_data(share_media=share)
-        await state.set_state(UploadState.wait_server)
-        lang = await __import__("utils.user_lang", fromlist=["get_user_language"]).get_user_language(user_id)
-        kb = InlineKeyboardBuilder()
-        kb.button(text="Server 1 — Media Umum" if lang == "id" else "Server 1 — General Media", callback_data="upload_server:1")
-        kb.button(text="Server 2 — Media Remaja Non-Seksual" if lang == "id" else "Server 2 — Non-Sexual Teen Media", callback_data="upload_server:2")
-        kb.button(text="Server 3 — Dewasa 18+ Non-Eksplisit" if lang == "id" else "Server 3 — 18+ Non-Explicit", callback_data="upload_server:3")
-        kb.adjust(1)
-        await call.message.edit_text(
-            "🗂 <b>PILIH SERVER</b>\n\nPilih server untuk file yang akan diupload." if lang == "id" else
-            "🗂 <b>CHOOSE SERVER</b>\n\nChoose the server for this upload.",
-            parse_mode="HTML", reply_markup=kb.as_markup()
+
+        share = (
+            call.data == "share_yes"
         )
 
-@router.callback_query(F.data.startswith("upload_server:"))
-async def upload_server(call: CallbackQuery, state: FSMContext):
-    server = call.data.rsplit(":", 1)[1]
-    if server not in {"1", "2", "3"}:
-        return await call.answer("Invalid server.", show_alert=True)
-    await state.update_data(market_server=server)
-    await state.set_state(UploadState.wait_title)
-    lang = await __import__("utils.user_lang", fromlist=["get_user_language"]).get_user_language(call.from_user.id)
-    await call.message.edit_text(
-        "📝 <b>MASUKKAN JUDUL FILE</b>\n\nKirim judul file.\nKetik <code>/skip</code> untuk judul otomatis." if lang == "id" else
-        "📝 <b>ENTER FILE TITLE</b>\n\nSend the file title.\nType <code>/skip</code> to use an automatic title.",
-        parse_mode="HTML"
-    )
-    await call.answer()
+        await state.update_data(
+            share_media=share
+        )
 
-@router.message(UploadState.wait_server)
-async def upload_server_text(message: Message, state: FSMContext):
-    lang = await __import__("utils.user_lang", fromlist=["get_user_language"]).get_user_language(message.from_user.id)
-    await message.answer("Gunakan tombol pilihan server di atas." if lang == "id" else "Please use the server buttons above.")
+        await state.set_state(
+            UploadState.wait_title
+        )
+
+        await call.message.edit_text(
+
+            "📝 <b>MASUKKAN JUDUL FILE</b>\n\n"
+
+            "Kirim judul file.\n"
+
+            "Ketik <code>/skip</code> "
+            "untuk menggunakan judul otomatis.",
+
+            parse_mode="HTML",
+        )
 
 
 # =========================================================
@@ -1944,8 +1936,7 @@ async def finalize_save(
                         review_photos,
                         view_count,
                         download_count,
-                        favorite_count,
-                        market_server
+                        favorite_count
                     )
                     VALUES (
                         $1,
@@ -1964,8 +1955,7 @@ async def finalize_save(
                         $13,
                         0,
                         0,
-                        0,
-                        $14
+                        0
                     )
                     """,
 
@@ -1982,7 +1972,6 @@ async def finalize_save(
                     price,
                     payment_provider,
                     review_json,
-                    data.get("market_server") or "1",
                 )
 
                 # =========================================

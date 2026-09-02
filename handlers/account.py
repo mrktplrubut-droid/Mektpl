@@ -8,11 +8,11 @@ from aiogram.types import (
 
 from database import get_pool
 from urllib.parse import quote
+from config import BOT_USERNAME
+from keyboards.menu import account_kb
 
 
 router = Router()
-
-BOT_USERNAME = "botmarketRobot"
 
 CREATOR_REQUIRED_REFERRAL = 100
 
@@ -190,79 +190,18 @@ async def open_account(
     )
 
     # =====================================
-    # KEYBOARD
+    # KEYBOARD — clean, role-aware account menu
     # =====================================
-
+    lang = (await pool.fetchval("SELECT language FROM users WHERE user_id=$1", user_id)) or "id"
+    menu = account_kb(
+        lang=lang,
+        is_creator=(is_creator and creator_status == "approved")
+    )
+    # Keep referral sharing as a separate action above the role menu.
     share_text = quote("🤖 Gabung marketplace bot saya! Upload, jual, beli, dan bagikan code Telegram.")
     share_url = f"https://t.me/share/url?url={quote(ref_link)}&text={share_text}"
+    menu.inline_keyboard.insert(0, [InlineKeyboardButton(text="📤 Bagikan Referral" if lang == "id" else "📤 Share Referral", url=share_url)])
 
-    keyboard_rows = [
-        [
-            InlineKeyboardButton(
-                text="📤 Bagikan Referral",
-                url=share_url
-            )
-        ],
-
-        [
-            InlineKeyboardButton(
-                text="🌐 Bahasa / Language",
-                callback_data="change_language"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="📂 My Code",
-                callback_data="my_code"
-            )
-        ],
-
-        [
-            creator_button
-        ]
-    ]
-
-    # =====================================
-    # WITHDRAW
-    # =====================================
-
-    if (
-        is_creator
-        and creator_status == "approved"
-    ):
-
-        keyboard_rows.append(
-            [
-                InlineKeyboardButton(
-                    text="🏦 Withdraw",
-                    callback_data="withdraw"
-                )
-            ]
-        )
-
-    else:
-
-        keyboard_rows.append(
-            [
-                InlineKeyboardButton(
-                    text="🔒 Withdraw",
-                    callback_data="withdraw_locked"
-                )
-            ]
-        )
-
-    keyboard_rows.append(
-        [
-            InlineKeyboardButton(
-                text="🔙 Kembali",
-                callback_data="home"
-            )
-        ]
-    )
-
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=keyboard_rows
-    )
 
     await message.edit_text(
         text,
