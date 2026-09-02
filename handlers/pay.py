@@ -583,25 +583,21 @@ async def finish_payment(
                 file["price"] or 0
             )
 
-            income = int(
-                price * 0.5
-            )
+            income = int(price * 0.70)
 
             owner_id = file["owner_id"]
 
+            # Credit creator exactly once because finish_payment can only transition one pending purchase to paid.
             await execute(
                 """
-                UPDATE users
-                SET
-                    balance =
-                        COALESCE(balance, 0) + $1,
-                    total_earn =
-                        COALESCE(total_earn, 0) + $1
+                UPDATE users SET balance=COALESCE(balance,0)+$1, total_earn=COALESCE(total_earn,0)+$1
                 WHERE chat_id=$2
-                """,
-                income,
-                owner_id,
-            )
+                """, income, owner_id)
+            await execute(
+                """
+                INSERT INTO creator_earnings(seller_id,file_code,purchase_id,gross_amount,creator_amount)
+                VALUES($1,$2,$3,$4,$5) ON CONFLICT(purchase_id) DO NOTHING
+                """, owner_id, file["code"], purchase_id, price, income)
 
             await execute(
                 """

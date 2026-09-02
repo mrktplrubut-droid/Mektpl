@@ -1,3 +1,4 @@
+import math
 import asyncio
 import json
 import time
@@ -581,3 +582,19 @@ async def end_page(call: CallbackQuery):
 
     except:
         pass
+
+@router.callback_query(F.data.startswith("all:"))
+async def open_all_pages(call: CallbackQuery):
+    code=call.data.split(":",1)[1]; user_id=call.from_user.id
+    pool=await get_pool(); file=await pool.fetchrow("SELECT media,is_paid,price FROM files WHERE code=$1",code)
+    if not file: return await call.answer("File tidak ditemukan.",show_alert=True)
+    # send_page enforces paid access before any media is sent.
+    try:
+        media=file["media"]
+        if isinstance(media,str): media=json.loads(media)
+        total=max(1, math.ceil(len(media or [])/PAGE_SIZE))
+    except Exception: return await call.answer("Media tidak valid.",show_alert=True)
+    await call.answer("📤 Mengirim semua halaman..." if total>1 else "📤 Membuka file...")
+    for p in range(1,total+1):
+        ok=await send_page(call.bot,call.message.chat.id,user_id,code,p)
+        if not ok: break
