@@ -489,59 +489,10 @@ async def notify_text(
 # MEDIA NOTIFY
 # =========================================================
 
-@router.message(
-    F.photo
-    | F.video
-    | F.document
-    | F.audio
-    | F.voice
-    | F.animation
-    | F.sticker
-)
-async def notify_media(
-    message: Message,
-    state: FSMContext,
-):
-
-    # =====================================================
-    # JANGAN GANGGU UPLOAD / PAYMENT / FSM
-    # =====================================================
-
-    current_state = await state.get_state()
-
-    if current_state:
-        return
-
-
-    # =====================================================
-    # LOADING
-    # =====================================================
-
-    loading = await loading_animation(message)
-
-    try:
-
-        # Beri efek pencarian
-        await asyncio.sleep(0.35)
-
-        return await message.answer(
-            (
-                "🛍 <b>MEDIA TERDETEKSI</b>\n\n"
-                "🔎 Media sedang diarahkan ke "
-                "<b>Marketplace</b>.\n\n"
-                "Semua code dan media yang tersedia "
-                "dapat kamu cari melalui Marketplace.\n\n"
-                "Tekan tombol di bawah untuk melihat "
-                "koleksi yang tersedia."
-            ),
-            parse_mode="HTML",
-            reply_markup=kb_marketplace(),
-        )
-
-    finally:
-
-        await delete_loading(loading)
-
+# Media is intentionally NOT handled by the generic notify router.
+# Upload mode is owned exclusively by handlers.upfile.receive_media.
+# Get File mode accepts CODE text only (handlers.getfile.receive_code).
+# Media sent outside Upload Mode is silently ignored.
 
 # =========================================================
 # FALLBACK
