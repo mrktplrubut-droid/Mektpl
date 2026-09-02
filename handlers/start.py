@@ -43,7 +43,11 @@ async def start_cmd(
     state: FSMContext
 ):
 
+    # /start always opens a compact language selector.
+    # The original deep-link argument is kept in FSM so referral/code links are not lost.
+    payload = message.text.split(maxsplit=1)[1].strip() if len(message.text.split(maxsplit=1)) > 1 else ""
     await state.clear()
+    await state.update_data(start_payload=payload)
 
     user_id = message.from_user.id
 
@@ -63,7 +67,11 @@ async def start_cmd(
             message,
             loading,
             user_id,
-            username
+            username,
+            state=state,
+            force_language=True,
+            start_arg=payload,
+            from_user=message.from_user
         )
 
     except Exception as e:
@@ -92,10 +100,15 @@ async def process_start(
     message: Message,
     loading: Message,
     user_id: int,
-    username: str
+    username: str,
+    state: FSMContext | None = None,
+    force_language: bool = False,
+    start_arg: str = "",
+    from_user=None
 ):
 
     bot = message.bot
+    tg_user = from_user or message.from_user
 
     # =====================================================
     # SAVE / UPDATE MEMBER PADA SETIAP /START
@@ -131,40 +144,23 @@ async def process_start(
             last_seen = NOW()
         """,
         user_id,
-        message.from_user.username,
-        message.from_user.full_name
+        tg_user.username,
+        tg_user.full_name
     )
 
-    # First /start: choose language before anything else.
+    # Always show language selection from /start.
+    # Existing language is only used after the user confirms it.
     current_lang = await pool.fetchval(
         "SELECT language FROM users WHERE user_id=$1",
         user_id
     )
-    if not current_lang:
+    if force_language or not current_lang:
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="🇮🇩 Indonesia", callback_data="lang:id"),
                 InlineKeyboardButton(text="🇬🇧 English", callback_data="lang:en"),
             ]
         ])
-        # Keep referral attribution even while language is being selected.
-        raw = message.text.split(maxsplit=1)[1] if len(message.text.split(maxsplit=1)) > 1 else ""
-        if raw.startswith("ref_") and raw[4:].isdigit() and int(raw[4:]) != user_id:
-            ref_id = int(raw[4:])
-            ref_exists = await pool.fetchval("SELECT 1 FROM users WHERE user_id=$1", ref_id)
-            if ref_exists:
-                await pool.execute("UPDATE users SET referred_by=$1 WHERE user_id=$2 AND referred_by IS NULL", ref_id, user_id)
-                await pool.execute(
-                    "UPDATE users SET referral_count=COALESCE(referral_count,0)+1,total_referral=COALESCE(total_referral,0)+1,balance=COALESCE(balance,0)+200,updated_at=NOW() WHERE user_id=$1",
-                    ref_id
-                )
-                try:
-                    from utils.referral import check_referral_reward
-                    reward = await check_referral_reward(pool, ref_id)
-                    if reward:
-                        await bot.send_message(ref_id, f"🎁 <b>Referral Reward</b>\n\n{reward}", parse_mode="HTML")
-                except Exception:
-                    logging.exception("REFERRAL REWARD ERROR")
         await loading.edit_text(
             "🌐 <b>Pilih Bahasa / Choose Language</b>\n\n"
             "🇮🇩 Pilih Bahasa Indonesia\n🇬🇧 Choose English",
@@ -222,9 +218,7 @@ async def process_start(
     # AMBIL PARAMETER /START
     # =====================================================
 
-    args = message.text.split(
-        maxsplit=1
-    )
+    args = ["/start"] + ([start_arg] if start_arg else [])
 
     # =====================================================
     # REFERRAL
@@ -691,7 +685,7 @@ async def back_home(
 # LANGUAGE SELECTION
 # =========================================================
 @router.callback_query(F.data.startswith("lang:"))
-async def choose_language(call: CallbackQuery):
+async def choose_language(call: CallbackQuery, state: FSMContext):
     lang = call.data.split(":", 1)[1]
     if lang not in ("id", "en"):
         return await call.answer("Invalid language.", show_alert=True)
@@ -701,6 +695,10 @@ async def choose_language(call: CallbackQuery):
         await call.answer("Bahasa disimpan." if lang == "id" else "Language saved.")
     except Exception:
         pass
+
+    data = await state.get_data()
+    start_arg = (data.get("start_payload") or "").strip()
+    await state.clear()
 
     missing = await get_missing_channels(call.bot, call.from_user.id)
     if missing:
@@ -723,4 +721,13 @@ async def choose_language(call: CallbackQuery):
 
     user = await pool.fetchrow("SELECT username, fullname FROM users WHERE user_id=$1", call.from_user.id)
     display = (user["username"] or user["fullname"] or "unknown") if user else "unknown"
-    await render_home_fast(call.bot, call.message, call.from_user.id, display)
+    # Preserve /start deep-links (including referral links) after language selection.
+    await process_start(
+        call.message,
+        call.message,
+        call.from_user.id,
+        display,
+        force_language=False,
+        start_arg=start_arg,
+        from_user=call.from_user
+    )

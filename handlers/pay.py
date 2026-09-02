@@ -13,7 +13,7 @@ from aiogram.types import (
     BufferedInputFile,
 )
 
-from database import fetchrow, execute
+from database import fetchrow, fetch, execute
 
 from utils.redis_client import (
     safe_set,
@@ -552,6 +552,26 @@ async def finish_payment(
             logger.exception(
                 "BUY COUNT UPDATE ERROR"
             )
+
+        # Every successful purchase advances the 3-step free-unlock progress
+        # for users who previously registered/shared this code.
+        try:
+            completed_rows = await fetch(
+                """UPDATE free_code_progress
+                   SET purchase_count=LEAST(3,COALESCE(purchase_count,0)+1),
+                       completed=(LEAST(3,COALESCE(purchase_count,0)+1)>=3),
+                       completed_at=CASE WHEN LEAST(3,COALESCE(purchase_count,0)+1)>=3 THEN COALESCE(completed_at,NOW()) ELSE completed_at END
+                   WHERE code=$1 AND completed=FALSE
+                   RETURNING user_id, completed""", file["code"]
+            )
+            for completed_row in completed_rows:
+                if completed_row["completed"]:
+                    try:
+                        await bot.send_message(completed_row["user_id"], f"🎉 <b>Progress Code Free 3/3!</b>\n\nCode <code>{file['code']}</code> sudah bisa kamu buka gratis karena sudah ada 3 pembelian berhasil.", parse_mode="HTML")
+                    except Exception:
+                        logger.exception("FREE PROGRESS COMPLETE NOTIFY ERROR")
+        except Exception:
+            logger.exception("FREE CODE PROGRESS UPDATE ERROR")
 
         # ====================================================
         # SELLER PROFIT

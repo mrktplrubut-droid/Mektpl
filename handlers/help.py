@@ -1,372 +1,62 @@
-import asyncio
-
 from aiogram import Router, F
-from aiogram.types import CallbackQuery
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from database import get_pool
 
 router = Router()
 
-HELP_CACHE = {}
+def kb(rows):
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=t, callback_data=d) for t,d in row] for row in rows])
 
+async def lang_of(user_id: int) -> str:
+    pool = await get_pool()
+    return (await pool.fetchval('SELECT language FROM users WHERE user_id=$1', user_id)) or 'id'
 
-def get_cache(key):
-    return HELP_CACHE.get(key)
-
-
-def set_cache(key, value):
-    HELP_CACHE[key] = value
-
-
-async def loading(call: CallbackQuery):
-    try:
-        await call.message.edit_text("⏳ Loading...")
-    except Exception:
-        pass
-
-    await asyncio.sleep(0.3)
-
-
-def kb_builder(buttons):
-    builder = InlineKeyboardBuilder()
-
-    for text, data in buttons:
-        builder.button(
-            text=text,
-            callback_data=data
-        )
-
-    builder.adjust(1)
-
-    return builder.as_markup()
-
-
-# =========================================================
-# HELP MENU
-# =========================================================
-
-@router.callback_query(F.data == "help")
+@router.callback_query(F.data == 'help')
 async def help_menu(call: CallbackQuery):
-
-    await loading(call)
-
-    text = (
-        "❓ <b>HELP CENTER</b>\n\n"
-        "Selamat datang di <b>BOT MARKET</b>. 🤖\n\n"
-        "Pelajari cara menggunakan fitur utama bot.\n\n"
-        "📤 <b>Upload File</b> — Cara upload dan membuat CODE.\n"
-        "📥 <b>Get File</b> — Cara mengambil file menggunakan CODE.\n"
-        "💰 <b>Mendapatkan Cuan</b> — Cara mendapatkan penghasilan.\n"
-        "🏦 <b>Withdraw</b> — Cara mencairkan saldo.\n\n"
-        "👇 Pilih panduan:"
-    )
-
-    kb = kb_builder([
-        ("📤 Cara Upload File", "help_upfile"),
-        ("📥 Cara Get File", "help_getfile"),
-        ("💰 Cara Mendapatkan Cuan", "help_money"),
-        ("🏦 Cara Withdraw", "help_withdraw"),
-        ("🏠 Home", "home"),
-    ])
-
-    await call.message.edit_text(
-        text,
-        reply_markup=kb,
-        parse_mode="HTML"
-    )
-
+    lang = await lang_of(call.from_user.id)
+    if lang == 'en':
+        text = ('❓ <b>HELP CENTER</b>\n━━━━━━━━━━━━━━━━━━\n\n'
+                '<b>What is this bot?</b>\nA Telegram marketplace to upload, store, share, buy and sell Telegram codes/media safely and conveniently.\n\n'
+                '<b>What can you do?</b>\n📤 Upload & create a code\n🛍 Browse and buy codes\n💰 Sell your own code\n🎁 Earn free unlock progress from real purchases\n⭐ Rate, like/dislike and review media\n❤️ Save favorites\n👤 Manage your account and balance\n💎 Upgrade VIP/VVIP\n🤝 Invite friends with referral\n\nChoose a guide below.')
+        rows = [[('📤 Upload & Sell','help_upload'),('🛍 Buy Code','help_buy')],
+                [('🎁 Free Unlock 3/3','help_free'),('⭐ Like / Rating / Review','help_reaction')],
+                [('💰 Earnings & Referral','help_earn'),('💎 VIP / VVIP','help_vip')],
+                [('🔐 Safety & Limits','help_safety')],[('🌐 Language','change_language')],[('🏠 Home','home')]]
+    else:
+        text = ('❓ <b>PUSAT BANTUAN</b>\n━━━━━━━━━━━━━━━━━━\n\n'
+                '<b>Apa itu bot ini?</b>\nMarketplace Telegram untuk upload, menyimpan, membagikan, membeli, dan menjual code/media dengan cara yang mudah dipahami.\n\n'
+                '<b>Apa yang bisa dilakukan?</b>\n📤 Upload & buat code\n🛍 Cari dan beli code\n💰 Jual code sendiri\n🎁 Dapatkan akses gratis dari progres pembelian nyata\n⭐ Like, dislike, rating, dan review\n❤️ Simpan favorit\n👤 Kelola akun dan saldo\n💎 Upgrade VIP/VVIP\n🤝 Undang teman lewat referral\n\nPilih panduan di bawah.')
+        rows = [[('📤 Upload & Jual','help_upload'),('🛍 Beli Code','help_buy')],
+                [('🎁 Buka Gratis 3/3','help_free'),('⭐ Like / Rating / Review','help_reaction')],
+                [('💰 Cuan & Referral','help_earn'),('💎 VIP / VVIP','help_vip')],
+                [('🔐 Keamanan & Batasan','help_safety')],[('🌐 Bahasa','change_language')],[('🏠 Home','home')]]
+    await call.message.edit_text(text, parse_mode='HTML', reply_markup=kb(rows))
     await call.answer()
 
+GUIDES = {
+'id': {
+'help_upload': ('📤 <b>UPLOAD & JUAL CODE</b>\n━━━━━━━━━━━━━━━━━━\n\n'
+'1️⃣ Tekan <b>Upload File</b>.\n2️⃣ Kirim media yang ingin disimpan.\n3️⃣ Tekan <b>STOP & SAVE</b> setelah selesai.\n4️⃣ Isi judul, kategori, deskripsi, dan tipe FREE/PAID.\n5️⃣ Jika PAID, tentukan harga sesuai ketentuan bot.\n6️⃣ Bot membuat <b>CODE</b> otomatis.\n\n<b>Keuntungan seller:</b> code bisa dipromosikan di marketplace, pembeli dapat membuka media setelah pembayaran berhasil, dan statistik seperti view, like, dislike, rating, review, serta penjualan dapat dipantau.\n\n💡 Gunakan judul/deskripsi yang jujur dan jelas agar calon pembeli mudah memahami isi code.'),
+'help_buy': ('🛍 <b>CARA BELI CODE</b>\n━━━━━━━━━━━━━━━━━━\n\n1️⃣ Buka Marketplace.\n2️⃣ Pilih code yang menarik.\n3️⃣ Periksa harga, jumlah media, terjual, like/dislike, rating, dan review.\n4️⃣ Tekan <b>Beli</b>.\n5️⃣ Selesaikan pembayaran.\n6️⃣ Setelah pembayaran terkonfirmasi, akses media diberikan.\n\nJika QR otomatis bermasalah pada pembayaran tertentu, gunakan metode/QR manual yang disediakan bot.'),
+'help_free': ('🎁 <b>BUKA CODE GRATIS — PROGRESS 3/3</b>\n━━━━━━━━━━━━━━━━━━\n\nFitur ini dibuat agar kamu bisa mendapatkan akses gratis dengan membantu seller mendapatkan pembeli.\n\n📈 Ada <b>3 progress</b>. Kamu membagikan code terlebih dahulu. Progress <b>bertambah hanya ketika ada pembelian yang benar-benar berhasil</b> dari code tersebut, bukan sekadar menekan tombol share.\n\n1/3 → 1 pembelian\n2/3 → 2 pembelian\n3/3 → 3 pembelian\n\nSetelah 3/3, code yang kamu promosikan dapat dibuka tanpa membayar. Sistem mencatat progres per pengguna dan per code agar tidak tercampur.'),
+'help_reaction': ('⭐ <b>LIKE, DISLIKE, RATING & REVIEW</b>\n━━━━━━━━━━━━━━━━━━\n\nSaat membuka detail media, kamu bisa memilih 👍 Suka atau 👎 Tidak suka. Satu user hanya memiliki satu reaksi aktif dan bisa menggantinya.\n\n⭐ <b>Rating</b> membantu menunjukkan kualitas berdasarkan penilaian pengguna.\n💬 <b>Review</b> digunakan untuk menulis pengalaman/masukan. Review dapat diperbarui oleh pemilik akun dan ditampilkan pada detail code.\n\nMarketplace memakai data tersebut untuk membantu pengguna melihat code yang paling disukai, paling banyak mendapat masukan, dan memiliki reputasi terbaik.'),
+'help_earn': ('💰 <b>CUAN & REFERRAL</b>\n━━━━━━━━━━━━━━━━━━\n\n💵 <b>Penjualan:</b> seller mendapatkan pendapatan sesuai aturan komisi bot.\n🤝 <b>Referral:</b> bagikan link referral pribadi. Jika user baru masuk melalui link tersebut dan memenuhi syarat sistem, referral tercatat dan reward diberikan sesuai program aktif.\n\nGunakan tombol <b>Bagikan Referral</b> agar link mudah dikirim ke Telegram. Hindari spam dan kirim hanya kepada orang yang memang ingin menggunakan bot.'),
+'help_vip': ('💎 <b>VIP / VVIP</b>\n━━━━━━━━━━━━━━━━━━\n\nVIP/VVIP memberikan akses premium sesuai paket aktif.\n\nJika QR otomatis gagal/error, pilih <b>QR Manual</b>. Setelah membayar, tekan <b>Saya Sudah Bayar</b>. Admin akan menerima notifikasi untuk memeriksa pembayaran.\n\n✅ APPROVE → paket aktif dan user menerima notifikasi.\n❌ FAILED → admin wajib memberikan alasan, misalnya pembayaran belum lunas, nominal tidak sesuai, atau pembayaran belum masuk. Alasan dikirim ke user agar jelas langkah berikutnya.'),
+'help_safety': ('🔐 <b>KEAMANAN & PENGGUNAAN AMAN</b>\n━━━━━━━━━━━━━━━━━━\n\nBot menerapkan pembatasan dan pemrosesan bertahap untuk mengurangi spam, duplikasi transaksi, dan beban Telegram.\n\n⚠️ Tidak ada bot yang bisa menjamin 100% bebas banned/flood karena keputusan akhir tetap milik Telegram.\n\nAgar aman:\n• Jangan spam command/callback berulang-ulang.\n• Jangan broadcast ke pengguna tanpa izin.\n• Jangan upload konten ilegal atau melanggar hak cipta.\n• Jangan melakukan manipulasi pembayaran, like, rating, review, atau referral.\n• Gunakan tombol resmi bot dan tunggu proses selesai sebelum menekan ulang.'),
+},
+'en': {
+'help_upload': ('📤 <b>UPLOAD & SELL CODE</b>\n━━━━━━━━━━━━━━━━━━\n\n1️⃣ Tap <b>Upload File</b>.\n2️⃣ Send the media you want to store.\n3️⃣ Press <b>STOP & SAVE</b> when finished.\n4️⃣ Set title, category, description and FREE/PAID type.\n5️⃣ For PAID, set the price allowed by the bot.\n6️⃣ The bot creates a unique <b>CODE</b>.\n\n<b>Seller benefits:</b> promote your code in the marketplace and track views, likes, dislikes, ratings, reviews and sales. Buyers receive access after successful payment.'),
+'help_buy': ('🛍 <b>HOW TO BUY A CODE</b>\n━━━━━━━━━━━━━━━━━━\n\n1️⃣ Open Marketplace.\n2️⃣ Choose a code.\n3️⃣ Check price, media count, sales, likes/dislikes, rating and reviews.\n4️⃣ Tap <b>Buy</b>.\n5️⃣ Complete payment.\n6️⃣ After confirmation, the media access is delivered.\n\nIf automatic QR fails, use the manual QR/payment option shown by the bot.'),
+'help_free': ('🎁 <b>FREE CODE UNLOCK — 3/3 PROGRESS</b>\n━━━━━━━━━━━━━━━━━━\n\nShare the code first to help the seller get real buyers. Progress increases <b>only after a real successful purchase</b>, not simply because the share button was pressed.\n\n1/3 → 1 purchase\n2/3 → 2 purchases\n3/3 → 3 purchases\n\nAt 3/3, the code you promoted can be opened for free. Progress is tracked per user and per code.'),
+'help_reaction': ('⭐ <b>LIKE, DISLIKE, RATING & REVIEW</b>\n━━━━━━━━━━━━━━━━━━\n\nOn a media detail page you can choose 👍 Like or 👎 Dislike. One user has one active reaction and can change it.\n\n⭐ <b>Rating</b> reflects user scoring.\n💬 <b>Review</b> lets users leave useful feedback and update their own review.\n\nMarketplace statistics use these signals to highlight popular and well-reviewed codes.'),
+'help_earn': ('💰 <b>EARNINGS & REFERRAL</b>\n━━━━━━━━━━━━━━━━━━\n\n💵 <b>Sales:</b> sellers receive earnings according to the bot commission rules.\n🤝 <b>Referral:</b> share your personal referral link. Eligible new users are recorded and rewards are issued according to the active referral program.\n\nUse <b>Share Referral</b> and avoid unsolicited spam.'),
+'help_vip': ('💎 <b>VIP / VVIP</b>\n━━━━━━━━━━━━━━━━━━\n\nVIP/VVIP provides premium access according to the active plan.\n\nIf automatic QR fails, choose <b>Manual QR</b>. After paying, tap <b>I Have Paid</b>. Admin receives a verification request.\n\n✅ APPROVE → the plan is activated and the user is notified.\n❌ FAILED → admin must enter a reason, such as incomplete payment, wrong amount, or payment not received. The reason is sent to the user.'),
+'help_safety': ('🔐 <b>SAFETY & USAGE</b>\n━━━━━━━━━━━━━━━━━━\n\nThe bot uses throttling/step-by-step processing to reduce spam, duplicate transactions and excessive Telegram API load.\n\n⚠️ No bot can guarantee 100% protection from Telegram restrictions.\n\nFor safer use:\n• Do not spam commands or callbacks.\n• Do not broadcast without permission.\n• Do not upload illegal/copyright-infringing content.\n• Do not manipulate payment, likes, ratings, reviews or referrals.\n• Use the official buttons and wait for a process to finish before retrying.'),
+}}
 
-# =========================================================
-# TEMPLATE
-# =========================================================
-
-async def help_template(
-    call: CallbackQuery,
-    key: str,
-    content: str
-):
-    cache = get_cache(key)
-
-    if cache is None:
-        set_cache(key, content)
-        cache = content
-
-    await loading(call)
-
-    kb = kb_builder([
-        ("🔙 Kembali ke Help", "help"),
-    ])
-
-    await call.message.edit_text(
-        cache,
-        reply_markup=kb,
-        parse_mode="HTML"
-    )
-
+@router.callback_query(F.data.in_(list(GUIDES['id']) + list(GUIDES['en'])))
+async def guide(call: CallbackQuery):
+    lang = await lang_of(call.from_user.id)
+    text = GUIDES[lang].get(call.data, GUIDES['id'][call.data])
+    await call.message.edit_text(text, parse_mode='HTML', reply_markup=kb([[('⬅️ Kembali' if lang=='id' else '⬅️ Back','help')],[('🏠 Home','home')]]))
     await call.answer()
-
-
-# =========================================================
-# UPLOAD FILE
-# =========================================================
-
-@router.callback_query(F.data == "help_upfile")
-async def help_upfile(call: CallbackQuery):
-
-    await help_template(
-        call,
-        "upfile",
-        """
-📤 <b>CARA UPLOAD FILE</b>
-
-<b>1. Mulai Upload</b>
-Tekan menu 📤 <b>Upload File</b>.
-
-<b>2. Kirim File</b>
-Kirim file yang ingin disimpan.
-
-Support:
-• 📄 Dokumen
-• 🎬 Video
-• 🖼 Foto
-• ZIP
-• RAR
-• APK
-• PDF
-• Dan file Telegram lainnya.
-
-📦 Maksimal <b>200 media</b> dalam satu CODE.
-
-<b>3. Selesai Upload</b>
-Jika semua file sudah dikirim, tekan:
-⏹ <b>STOP & SAVE</b>
-
-Jika ingin membatalkan:
-❌ <b>BATAL</b>
-
-<b>4. Pilih Mode</b>
-🔗 <b>Share Media</b>
-File dapat digunakan melalui sistem share/link jika tersedia.
-
-🔒 <b>Private</b>
-File hanya dapat diakses menggunakan CODE.
-
-<b>5. Masukkan Judul</b>
-Contoh:
-<code>Premium Pack 2026</code>
-
-Atau ketik <code>/skip</code> untuk menggunakan judul otomatis.
-
-<b>6. Pilih Tipe File</b>
-🆓 <b>FREE</b> — File gratis.
-💰 <b>PAID</b> — File berbayar.
-
-⚠️ PAID hanya tersedia untuk:
-🎨 <b>Kreator Terverifikasi</b> ✅
-
-<b>Harga PAID</b>
-Minimal <b>Rp1.000</b>.
-
-Contoh:
-<code>1000</code>
-<code>5000</code>
-<code>10000</code>
-
-<b>7. CODE Dibuat</b>
-Setelah berhasil disimpan, bot membuat CODE otomatis.
-
-Contoh:
-<code>8ae2o91i...</code>
-
-Bagikan CODE tersebut kepada pengguna atau calon pembeli.
-
-💡 <b>Tips</b>
-✔ Gunakan judul yang jelas.
-✔ Upload file berkualitas.
-✔ Pastikan file sudah benar.
-✔ Simpan CODE dengan baik.
-✔ Promosikan CODE untuk mendapatkan pembeli.
-"""
-    )
-
-
-# =========================================================
-# GET FILE
-# =========================================================
-
-@router.callback_query(F.data == "help_getfile")
-async def help_getfile(call: CallbackQuery):
-
-    await help_template(
-        call,
-        "getfile",
-        """
-📥 <b>CARA GET FILE</b>
-
-<b>1. Buka Get File</b>
-Tekan menu 📥 <b>Get File</b>.
-
-<b>2. Masukkan CODE</b>
-Kirim CODE file.
-
-Contoh:
-<code>8ae2o91i...</code>
-
-Pastikan CODE yang dikirim benar.
-
-<b>Jika FREE</b>
-🆓 File gratis dan tidak memerlukan pembayaran.
-
-Bot akan langsung memproses dan mengirim file.
-
-<b>Jika PAID</b>
-💰 Bot akan menampilkan harga file.
-
-💳 Lakukan pembayaran sesuai nominal yang ditampilkan.
-
-Setelah pembayaran berhasil:
-✅ Pembayaran diverifikasi.
-📦 File diproses.
-📤 File dikirim kepada pembeli.
-
-⚠️ <b>Penting</b>
-Jangan mengubah nominal pembayaran.
-
-Pembayaran harus terdeteksi oleh sistem sebelum file dapat diberikan.
-
-💡 <b>Tips</b>
-✔ Pastikan CODE benar.
-✔ Bayar sesuai nominal.
-✔ Jangan mengirim bukti pembayaran palsu.
-✔ Jika pembayaran berhasil tetapi file belum diterima, hubungi admin.
-"""
-    )
-
-
-# =========================================================
-# MENDAPATKAN CUAN
-# =========================================================
-
-@router.callback_query(F.data == "help_money")
-async def help_money(call: CallbackQuery):
-
-    await help_template(
-        call,
-        "money",
-        """
-💰 <b>CARA MENDAPATKAN CUAN</b>
-
-BOT MARKET memungkinkan Kreator mendapatkan penghasilan dari file yang dijual.
-
-<b>Siapa yang bisa menjual?</b>
-🎨 <b>Kreator Terverifikasi</b> ✅
-
-Kreator dapat membuat:
-🆓 File FREE
-💰 File PAID
-
-<b>Cara mulai</b>
-① Ikuti proses menjadi Kreator.
-② Tunggu sampai disetujui.
-③ Pastikan status menjadi 🎨 <b>Kreator Terverifikasi</b>.
-④ Masuk 📤 <b>Upload File</b>.
-⑤ Upload file.
-⑥ Pilih 💰 <b>PAID</b>.
-⑦ Tentukan harga.
-
-💰 Harga minimal: <b>Rp1.000</b>.
-
-<b>Setelah file dibuat</b>
-Bot akan membuat CODE otomatis.
-
-CODE dapat dipromosikan melalui:
-• Telegram
-• WhatsApp
-• Facebook
-• Instagram
-• TikTok
-• Website
-• Komunitas
-• Media lainnya
-
-<b>Jika ada pembelian</b>
-💳 Pembeli melakukan pembayaran
-⬇️
-🤖 Sistem memproses pembayaran
-⬇️
-📦 File diberikan kepada pembeli
-⬇️
-💰 Penghasilan tercatat ke akun Kreator
-
-💡 <b>Tips meningkatkan penjualan</b>
-✔ Gunakan judul menarik.
-✔ Berikan informasi yang jelas.
-✔ Upload file berkualitas.
-✔ Tentukan harga yang sesuai.
-✔ Promosikan CODE secara rutin.
-
-Semakin banyak pembelian, semakin besar potensi penghasilan.
-"""
-    )
-
-
-# =========================================================
-# WITHDRAW
-# =========================================================
-
-@router.callback_query(F.data == "help_withdraw")
-async def help_withdraw(call: CallbackQuery):
-
-    await help_template(
-        call,
-        "withdraw",
-        """
-🏦 <b>CARA WITHDRAW</b>
-
-Withdraw digunakan untuk mencairkan saldo yang tersedia di akun.
-
-<b>1. Pastikan Saldo Cukup</b>
-Cek saldo akun sebelum melakukan withdraw.
-
-<b>2. Buka Withdraw</b>
-Masuk ke menu 🏦 <b>Withdraw</b>.
-
-<b>3. Pilih Metode</b>
-Pilih metode pencairan yang tersedia, misalnya:
-• DANA
-• OVO
-• GoPay
-• ShopeePay
-• Bank
-
-⚠️ Metode yang tersedia mengikuti pengaturan sistem.
-
-<b>4. Masukkan Data</b>
-Masukkan:
-💰 Nominal withdraw
-👤 Nama pemilik
-🔢 Nomor rekening/e-wallet
-
-<b>5. Periksa Data</b>
-Pastikan:
-✔ Nama benar.
-✔ Nomor benar.
-✔ Nominal benar.
-
-Jika sudah benar, kirim permintaan withdraw.
-
-<b>Status Withdraw</b>
-⏳ Pending — sedang diproses.
-✅ Success — berhasil.
-❌ Failed — gagal.
-
-⚠️ <b>Penting</b>
-Pastikan data pencairan benar.
-
-Kesalahan nomor rekening/e-wallet dapat menyebabkan dana gagal diterima.
-
-Jika mengalami masalah, hubungi admin melalui menu bantuan.
-"""
-    )

@@ -114,22 +114,27 @@ async def bayargg_webhook(request: Request):
 
 
             # UPDATE STATUS PEMBAYARAN
-            await pool.execute(
-                """
-                UPDATE file_purchases
-                SET 
-                    status='paid',
-                    paid_at=NOW()
-                WHERE payment_id=$1
-                """,
-                invoice_id
+            claimed = await pool.fetchrow(
+                """UPDATE file_purchases SET status='paid', paid_at=COALESCE(paid_at,NOW())
+                   WHERE payment_id=$1 AND status='pending' RETURNING id""", invoice_id
             )
+            if not claimed:
+                return {"success": True}
 
             # Each successful purchase advances the seller's 3-step marketplace progress.
             await pool.execute(
                 "UPDATE files SET buy_count=COALESCE(buy_count,0)+1, sold=COALESCE(sold,0)+1, free_progress=LEAST(3,COALESCE(free_progress,0)+1) WHERE code=$1",
                 purchase["file_code"]
             )
+            await pool.execute(
+                """UPDATE free_code_progress
+                   SET purchase_count=LEAST(3,COALESCE(purchase_count,0)+1),
+                       completed=(LEAST(3,COALESCE(purchase_count,0)+1)>=3),
+                       completed_at=CASE WHEN LEAST(3,COALESCE(purchase_count,0)+1)>=3 THEN COALESCE(completed_at,NOW()) ELSE completed_at END
+                   WHERE code=$1 AND completed=FALSE""",
+                purchase["file_code"]
+            )
+
 
 
             # HAPUS QR PAYMENT

@@ -126,7 +126,7 @@ async def send_page(bot, chat_id, user_id, code, page=1):
         user_id, code
     ) or False
     free_access = await pool.fetchval(
-        """SELECT EXISTS(SELECT 1 FROM free_code_unlocks
+        """SELECT EXISTS(SELECT 1 FROM free_code_progress
            WHERE user_id=$1 AND code=$2 AND completed=TRUE)""",
         user_id, code
     ) or False

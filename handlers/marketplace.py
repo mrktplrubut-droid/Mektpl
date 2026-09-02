@@ -235,6 +235,11 @@ async def marketplace_menu(call: CallbackQuery):
     )
 
     kb.button(
+        text="💬 Review Terbanyak",
+        callback_data="market_reviews"
+    )
+
+    kb.button(
         text="❤️ Favorit",
         callback_data="market_favorite"
     )
@@ -263,8 +268,9 @@ async def marketplace_menu(call: CallbackQuery):
         2,  # cari + terlaris
         2,  # terbaru + kategori
         2,  # semua + rating
-        2,  # favorit + pembelian
-        1   # home
+        2,  # review + favorit
+        2,  # pembelian + home
+        1
     )
 
     # ===============================
