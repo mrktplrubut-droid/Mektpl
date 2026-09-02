@@ -638,6 +638,7 @@ async def create_cashi(
                     $9,
                     NOW()
                 )
+                ON CONFLICT (user_id, file_code) DO NOTHING
                 RETURNING *
                 """,
                 user_id,

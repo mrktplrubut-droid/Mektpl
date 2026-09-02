@@ -932,6 +932,7 @@ async def create_cashi_payment(
                 'pending',
                 NOW()
             )
+            ON CONFLICT (user_id, file_code) DO NOTHING
             RETURNING *
             """,
             user_id,
@@ -953,9 +954,19 @@ async def create_cashi_payment(
         )
 
     if not purchase:
+        # Another request/callback created the same purchase at the
+        # same time. The UNIQUE(user_id, file_code) constraint is
+        # intentional; never create a second Cashi order for it.
+        existing = await get_pending_purchase(user_id, code)
+
+        if existing:
+            return await call.answer(
+                "⏳ Transaksi untuk file ini sudah dibuat. Silakan cek pembayaran sebelumnya.",
+                show_alert=True,
+            )
 
         return await call.answer(
-            "❌ Transaksi gagal dibuat.",
+            "❌ Transaksi gagal dibuat. Silakan coba lagi.",
             show_alert=True,
         )
 
