@@ -16,12 +16,10 @@ from utils.cashi import Cashi
 
 from .pay import (
     finish_payment,
-    CHECK_LOCK,
     SUCCESS_STATUSES,
     FAILED_STATUSES,
     normalize_status,
     format_rupiah,
-    payment_check_keyboard,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,9 +34,30 @@ CHECK_LOCK: Set[str] = set()
 # KEYBOARD
 # ============================================================
 def cashi_keyboard(payment_id: str):
-    return payment_check_keyboard(
-        payment_id,
-        "cashi",
+    """Keyboard dedicated to CASHI orders.
+
+    Keep the provider order ID opaque and route it to the CASHI-specific
+    handlers below. The handler performs ownership checks before any action.
+    """
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+    payment_id = str(payment_id).strip()
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔄 Cek Pembayaran",
+                    callback_data=f"cashicheck:{payment_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="❌ Batal",
+                    callback_data=f"cashicancel:{payment_id}",
+                )
+            ],
+        ]
     )
 # ============================================================
 # GENERATE QR
