@@ -5,6 +5,7 @@ from config import BOT_TOKEN
 
 from middlewares.ban import BanMiddleware
 from middlewares.maintenance import MaintenanceMiddleware
+from middlewares.ratelimit import RateLimitMiddleware
 
 
 # =========================
@@ -40,6 +41,9 @@ dp.message.middleware(
 dp.callback_query.middleware(
     MaintenanceMiddleware()
 )
+
+# Conservative anti-spam guard for accidental rapid-fire events.
+dp.callback_query.middleware(RateLimitMiddleware())
 
 
 # =========================
@@ -78,6 +82,8 @@ from handlers.ewallet import router as ewallet_router
 
 from handlers.favorite import router as favorite_router
 from handlers.rating import router as rating_router
+from handlers.review import router as review_router
+from handlers.free_code import router as free_code_router
 from handlers.market_all import router as market_all_router
 from handlers.market_purchase import router as market_purchase_router
 
@@ -147,6 +153,8 @@ dp.include_router(creator_router)
 
 dp.include_router(favorite_router)
 dp.include_router(rating_router)
+dp.include_router(review_router)
+dp.include_router(free_code_router)
 dp.include_router(market_all_router)
 dp.include_router(market_purchase_router)
 

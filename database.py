@@ -141,7 +141,7 @@ async def init_db():
             ("vvip_until", "TIMESTAMP"),
             ("vvip_expired", "TIMESTAMP"),
             ("expired_at", "TIMESTAMP"),
-            ("language", "TEXT DEFAULT 'id'"),
+            ("language", "TEXT"),
             ("free_share_count", "INT DEFAULT 0"),
             ("paid_quota", "INT DEFAULT 0")
         ]
@@ -277,6 +277,31 @@ async def init_db():
             admin_id BIGINT,
             created_at TIMESTAMP DEFAULT NOW(),
             reviewed_at TIMESTAMP
+        );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS free_code_progress (
+            id BIGSERIAL PRIMARY KEY,
+            code TEXT NOT NULL,
+            user_id BIGINT NOT NULL,
+            purchase_count INT DEFAULT 0,
+            completed BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT NOW(),
+            completed_at TIMESTAMP,
+            UNIQUE(code, user_id)
+        );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS file_reviews (
+            id BIGSERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            file_code TEXT NOT NULL,
+            review TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW(),
+            UNIQUE(user_id, file_code)
         );
         """)
 
