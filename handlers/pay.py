@@ -1,13 +1,13 @@
 import asyncio
+import base64
 import html
 import json
 import logging
+import os
 import secrets
 from datetime import datetime, timezone
 from typing import Any
-
 import aiohttp
-
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -18,11 +18,9 @@ from aiogram.types import (
     InlineKeyboardButton,
     Message,
 )
-
 from database import fetchrow, fetch, execute
 from utils.redis_client import safe_set, safe_get
 from utils.cashi import Cashi
-
 from config import (
     STORAGE_CHANNEL_ID,
     NOTIF_CHANNEL_ID,
@@ -30,27 +28,53 @@ from config import (
     MANUAL_QR_FILE_ID,
     CASHI_API_KEY,
 )
-
-
 logger = logging.getLogger(__name__)
-
 router = Router()
-
-
 # ============================================================
 # CONFIG
 # ============================================================
-
 PER_PAGE = 10
 MEDIA_TTL = 3600
-
 VERIFY_REQUEST_TTL = 300
 CALLBACK_TOKEN_TTL = 900
 CHECK_LOCK = 30
-
-CASHI_BASE_URL = "https://cashi.id"
-CASHI_CREATE_URL = f"{CASHI_BASE_URL}/api/create-order"
-
+CASHI_BASE_URL = os.getenv(
+    "CASHI_BASE_URL",
+    "https://cashi.id",
+).strip().rstrip("/")
+CASHI_CREATE_URL = (
+    f"{CASHI_BASE_URL}/api/create-order"
+)
+PAYMENT_MODE = os.getenv(
+    "PAYMENT_MODE",
+    "both",
+).strip().lower()
+if PAYMENT_MODE not in {
+    "both",
+    "cashi",
+    "manual",
+}:
+    PAYMENT_MODE = "both"
+CASHI_ENABLED = bool(
+    str(CASHI_API_KEY or "").strip()
+)
+AUTO_PAYMENT_ENABLED = (
+    PAYMENT_MODE in {
+        "both",
+        "cashi",
+    }
+    and CASHI_ENABLED
+)
+MANUAL_QR_FILE_ID = str(
+    MANUAL_QR_FILE_ID or ""
+).strip()
+MANUAL_PAYMENT_ENABLED = (
+    PAYMENT_MODE in {
+        "both",
+        "manual",
+    }
+    and bool(MANUAL_QR_FILE_ID)
+)
 SUCCESS_STATUSES = {
     "paid",
     "success",
@@ -59,7 +83,6 @@ SUCCESS_STATUSES = {
     "completed_payment",
     "success_payment",
 }
-
 FAILED_STATUSES = {
     "expired",
     "cancel",
@@ -69,7 +92,6 @@ FAILED_STATUSES = {
     "rejected",
     "void",
 }
-
 REUSABLE_PURCHASE_STATUSES = {
     "failed",
     "rejected",
@@ -78,152 +100,152 @@ REUSABLE_PURCHASE_STATUSES = {
     "cancelled",
     "canceled",
 }
-
-# Status ini tidak boleh dibuat ulang menjadi transaksi lain
 ACTIVE_PURCHASE_STATUSES = {
     "pending",
     "verifying",
 }
-
-
+# ============================================================
+# STARTUP LOG
+# ============================================================
+logger.info(
+    "PAYMENT_MODE : %s",
+    PAYMENT_MODE,
+)
+logger.info(
+    "MANUAL_PAYMENT : %s",
+    "ON" if MANUAL_PAYMENT_ENABLED else "OFF",
+)
+logger.info(
+    "CASHI_ENABLED : %s",
+    "ON" if CASHI_ENABLED else "OFF",
+)
+logger.info(
+    "AUTO_PAYMENT : %s",
+    "ON" if AUTO_PAYMENT_ENABLED else "OFF",
+)
 # ============================================================
 # FSM
 # ============================================================
-
 class RejectPaymentState(StatesGroup):
     waiting_reason = State()
-
-
 # ============================================================
 # BASIC HELPERS
 # ============================================================
-
 def mask_user_id(user_id: int) -> str:
     uid = str(user_id)
-
     if len(uid) <= 4:
         return "****"
-
     return uid[:2] + "****" + uid[-2:]
-
-
 def format_rupiah(amount: Any) -> str:
     try:
         return f"Rp {int(amount):,}".replace(",", ".")
     except Exception:
         return f"Rp {amount}"
-
-
 def normalize_status(value: Any) -> str:
     return str(value or "").strip().lower()
-
-
 def clean_html(value: Any) -> str:
     return html.escape(str(value or ""))
-
-
-def safe_int(value: Any, default: int = 0) -> int:
+def safe_int(
+    value: Any,
+    default: int = 0,
+) -> int:
     try:
         return int(value)
-    except (ValueError, TypeError):
+    except (
+        ValueError,
+        TypeError,
+    ):
         return default
-
-
 def get_admin_ids() -> set[int]:
     try:
         raw = ADMIN_IDS
-
         if raw is None:
             return set()
-
         if isinstance(raw, str):
-            values = raw.replace(";", ",").split(",")
-
-        elif isinstance(raw, (list, tuple, set)):
+            values = raw.replace(
+                ";",
+                ",",
+            ).split(",")
+        elif isinstance(
+            raw,
+            (list, tuple, set),
+        ):
             values = raw
-
         else:
             values = [raw]
-
         result = set()
-
         for value in values:
             try:
-                value = str(value).strip()
-
+                value = str(
+                    value
+                ).strip()
                 if value:
-                    result.add(int(value))
-
-            except (ValueError, TypeError):
+                    result.add(
+                        int(value)
+                    )
+            except (
+                ValueError,
+                TypeError,
+            ):
                 continue
-
         return result
-
     except Exception:
-        logger.exception("GET ADMIN IDS ERROR")
+        logger.exception(
+            "GET ADMIN IDS ERROR"
+        )
         return set()
-
-
-def is_admin(user_id: int) -> bool:
+def is_admin(
+    user_id: int,
+) -> bool:
     try:
-        return int(user_id) in get_admin_ids()
+        return int(
+            user_id
+        ) in get_admin_ids()
     except Exception:
         return False
-
-
 # ============================================================
 # GENERIC CASHI RESPONSE HELPERS
 # ============================================================
-
 def recursive_find(
     data: Any,
     keys: set[str],
 ):
-    """
-    Mencari key Cashi baik di root maupun data nested.
-    """
-
     if isinstance(data, dict):
-
         for key in keys:
-            if key in data and data[key] not in (
-                None,
-                "",
+            if (
+                key in data
+                and data[key]
+                not in (
+                    None,
+                    "",
+                )
             ):
                 return data[key]
-
         for value in data.values():
-
             found = recursive_find(
                 value,
                 keys,
             )
-
             if found not in (
                 None,
                 "",
             ):
                 return found
-
     elif isinstance(data, list):
-
         for item in data:
-
             found = recursive_find(
                 item,
                 keys,
             )
-
             if found not in (
                 None,
                 "",
             ):
                 return found
-
     return None
-
-
-def extract_cashi_status(data: Any) -> str:
+def extract_cashi_status(
+    data: Any,
+) -> str:
     value = recursive_find(
         data,
         {
@@ -233,15 +255,13 @@ def extract_cashi_status(data: Any) -> str:
             "state",
         },
     )
-
-    return normalize_status(value)
-
-
+    return normalize_status(
+        value
+    )
 def extract_cashi_order_id(
     data: Any,
     fallback: str | None = None,
 ) -> str:
-
     value = recursive_find(
         data,
         {
@@ -254,19 +274,16 @@ def extract_cashi_order_id(
             "transactionId",
         },
     )
-
     if value:
-        return str(value).strip()
-
+        return str(
+            value
+        ).strip()
     return str(
         fallback or ""
     ).strip()
-
-
 def extract_cashi_qr_url(
     data: Any,
 ) -> str:
-
     value = recursive_find(
         data,
         {
@@ -280,27 +297,23 @@ def extract_cashi_qr_url(
             "qrCode",
         },
     )
-
     if not value:
         return ""
-
-    if isinstance(value, dict):
-
+    if isinstance(
+        value,
+        dict,
+    ):
         value = (
             value.get("url")
             or value.get("image")
             or value.get("src")
         )
-
     return str(
         value or ""
     ).strip()
-
-
 def extract_cashi_payment_url(
     data: Any,
 ) -> str:
-
     value = recursive_find(
         data,
         {
@@ -313,69 +326,77 @@ def extract_cashi_payment_url(
             "url",
         },
     )
-
     if not value:
         return ""
-
     return str(
         value or ""
     ).strip()
-
-
 def parse_cashi_datetime(
     value: Any,
 ):
-    if not value:
+    if value is None:
         return None
-
-    if isinstance(value, datetime):
+    # Cashi memakai "0" untuk no expiration.
+    if str(value).strip().lower() in {
+        "",
+        "0",
+        "0.0",
+        "none",
+        "null",
+    }:
+        return None
+    if isinstance(
+        value,
+        datetime,
+    ):
+        if value.tzinfo is None:
+            return value.replace(
+                tzinfo=timezone.utc
+            )
         return value
-
     try:
-
         if isinstance(
             value,
             (int, float),
         ):
-
+            # Angka 0 sudah ditangani di atas.
             return datetime.fromtimestamp(
                 float(value),
                 tz=timezone.utc,
             )
-
-        text = str(value).strip()
-
+        text = str(
+            value
+        ).strip()
         if not text:
             return None
-
         if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
-
+            text = (
+                text[:-1]
+                + "+00:00"
+            )
         result = datetime.fromisoformat(
             text
         )
-
+        if result.tzinfo is None:
+            result = result.replace(
+                tzinfo=timezone.utc
+            )
         return result
-
     except Exception:
-
         try:
-
             return Cashi._parse_datetime(
                 value
             )
-
         except Exception:
-
             logger.warning(
-                "CASHI DATETIME PARSE FAILED | value=%r",
+                (
+                    "CASHI DATETIME PARSE FAILED "
+                    "| value=%r"
+                ),
                 value,
                 exc_info=True,
             )
-
             return None
-
-
 def extract_cashi_expires_at(
     data: Any,
 ):
@@ -390,149 +411,115 @@ def extract_cashi_expires_at(
             "expiration",
         },
     )
-
     return parse_cashi_datetime(
         value
     )
-
-
 # ============================================================
 # CALLBACK TOKEN
 # ============================================================
-
 async def create_callback_token(
     prefix: str,
     data: dict,
 ) -> str:
-
-    token = secrets.token_urlsafe(12)
-
+    token = secrets.token_urlsafe(
+        12
+    )
     await safe_set(
         f"cb:{prefix}:{token}",
         data,
         ex=CALLBACK_TOKEN_TTL,
     )
-
     return token
-
-
 async def get_callback_token(
     prefix: str,
     token: str,
 ):
-
     if not token:
         return None
-
     try:
-
         data = await safe_get(
             f"cb:{prefix}:{token}"
         )
-
         if isinstance(
             data,
             dict,
         ):
             return data
-
         if isinstance(
             data,
             bytes,
         ):
-
             data = data.decode(
                 "utf-8",
                 errors="ignore",
             )
-
         if isinstance(
             data,
             str,
         ):
-
             try:
                 return json.loads(
                     data
                 )
             except Exception:
                 return None
-
         return None
-
     except Exception:
-
         logger.exception(
-            "GET CALLBACK TOKEN ERROR | %s",
+            (
+                "GET CALLBACK TOKEN ERROR "
+                "| prefix=%s"
+            ),
             prefix,
         )
-
         return None
-
-
 # ============================================================
 # MEDIA PARSER
 # ============================================================
-
 def parse_media(
     media_data: Any,
 ) -> list[dict]:
-
     if not media_data:
         return []
-
     if isinstance(
         media_data,
         str,
     ):
-
         try:
-
             media_data = json.loads(
                 media_data
             )
-
         except Exception:
-
             logger.warning(
                 "MEDIA JSON PARSE ERROR"
             )
-
             return []
-
     if isinstance(
         media_data,
         dict,
     ):
-
         media_data = (
             media_data.get("media")
             or media_data.get("items")
             or media_data.get("messages")
             or []
         )
-
     if not isinstance(
         media_data,
         list,
     ):
         return []
-
     result = []
-
     for item in media_data:
-
         if isinstance(
             item,
             dict,
         ):
-
             message_id = (
                 item.get("message_id")
                 or item.get("messageId")
                 or item.get("id")
             )
-
             try:
                 message_id = int(
                     message_id
@@ -542,17 +529,13 @@ def parse_media(
                 TypeError,
             ):
                 continue
-
             if message_id <= 0:
                 continue
-
             result.append({
                 **item,
                 "message_id": message_id,
             })
-
         else:
-
             try:
                 message_id = int(
                     item
@@ -562,35 +545,25 @@ def parse_media(
                 TypeError,
             ):
                 continue
-
             if message_id <= 0:
                 continue
-
             result.append({
                 "message_id": message_id,
             })
-
     return result
-
-
 # ============================================================
 # DATABASE
 # ============================================================
-
 async def get_file_by_code(
     code: str,
 ):
-
     if not code:
         return None
-
     code = str(
         code
     ).strip()
-
     if not code:
         return None
-
     return await fetchrow(
         """
         SELECT *
@@ -600,12 +573,9 @@ async def get_file_by_code(
         """,
         code,
     )
-
-
 async def get_purchase_by_id(
     purchase_id: int,
 ):
-
     return await fetchrow(
         """
         SELECT *
@@ -615,13 +585,10 @@ async def get_purchase_by_id(
         """,
         int(purchase_id),
     )
-
-
 async def get_active_purchase(
     user_id: int,
     code: str,
 ):
-
     return await fetchrow(
         """
         SELECT *
@@ -635,13 +602,30 @@ async def get_active_purchase(
         int(user_id),
         str(code).strip(),
     )
-
-
+async def get_active_method_purchase(
+    user_id: int,
+    code: str,
+    payment_prefix: str,
+):
+    return await fetchrow(
+        """
+        SELECT *
+        FROM file_purchases
+        WHERE user_id=$1
+          AND file_code=$2
+          AND status IN ('pending','verifying')
+          AND payment_id LIKE $3
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        int(user_id),
+        str(code).strip(),
+        f"{payment_prefix}%",
+    )
 async def get_paid_purchase(
     user_id: int,
     code: str,
 ):
-
     return await fetchrow(
         """
         SELECT *
@@ -655,203 +639,197 @@ async def get_paid_purchase(
         int(user_id),
         str(code).strip(),
     )
-
-
+# ============================================================
+# PAYMENT METHOD DETECTION
+# ============================================================
+def purchase_method(
+    purchase,
+) -> str:
+    payment_id = str(
+        purchase.get("payment_id")
+        or ""
+    ).strip()
+    if payment_id.startswith(
+        "CASHI-"
+    ):
+        return "cashi"
+    if payment_id.startswith(
+        "MANUAL-"
+    ):
+        return "manual"
+    return ""
 # ============================================================
 # DELETE OLD PAYMENT MESSAGE
 # ============================================================
-
 async def delete_payment_message(
     bot,
     purchase,
 ):
-
     try:
-
         message_id = purchase.get(
             "qr_message_id"
         )
-
         chat_id = purchase.get(
             "qr_chat_id"
         )
-
         if not message_id or not chat_id:
             return
-
         await bot.delete_message(
             chat_id=int(chat_id),
             message_id=int(message_id),
         )
-
     except Exception:
-
         logger.warning(
             "DELETE PAYMENT MESSAGE FAILED",
             exc_info=True,
         )
-
-
 # ============================================================
 # PAYMENT KEYBOARD
 # ============================================================
-
 def payment_method_keyboard(
     code: str,
 ):
-
+    buttons = []
+    if AUTO_PAYMENT_ENABLED:
+        buttons.append([
+            InlineKeyboardButton(
+                text="💳 Bayar via Cashi",
+                callback_data=f"cashi:{code}",
+            )
+        ])
+    if MANUAL_PAYMENT_ENABLED:
+        buttons.append([
+            InlineKeyboardButton(
+                text="📷 QR Manual",
+                callback_data=f"manual:{code}",
+            )
+        ])
+    if not buttons:
+        buttons.append([
+            InlineKeyboardButton(
+                text="❌ Pembayaran Tidak Tersedia",
+                callback_data="none",
+            )
+        ])
+    buttons.append([
+        InlineKeyboardButton(
+            text="❌ Batal",
+            callback_data="close",
+        )
+    ])
     return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="💳 Bayar via Cashi",
-                    callback_data=f"cashi:{code}",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="📷 QR Manual",
-                    callback_data=f"manual:{code}",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="❌ Batal",
-                    callback_data="close",
-                )
-            ],
-        ]
+        inline_keyboard=buttons
     )
-
-
 # ============================================================
 # PAYMENT ENTRY
 # ============================================================
-
 @router.callback_query(
     F.data.startswith("pay:")
 )
 async def choose_payment(
     call: CallbackQuery,
 ):
-
     await call.answer(
         "⏳ Menyiapkan pembayaran..."
     )
-
     try:
-
         code = call.data.split(
             ":",
             1,
         )[1].strip()
-
     except (
         AttributeError,
         IndexError,
     ):
-
         return await call.message.answer(
             "❌ Code tidak valid."
         )
-
     if not code:
-
         return await call.message.answer(
             "❌ Code tidak valid."
         )
-
     try:
-
         file = await get_file_by_code(
             code
         )
-
     except Exception:
-
         logger.exception(
             "GET FILE ERROR"
         )
-
         return await call.message.answer(
             "❌ Gagal mengambil data file."
         )
-
     if not file:
-
         return await call.message.answer(
             "❌ File tidak ditemukan."
         )
-
     price = safe_int(
         file.get("price")
     )
-
     if price <= 0:
-
         return await call.message.answer(
             "❌ Harga file tidak valid."
         )
-
     user_id = int(
         call.from_user.id
     )
-
-    # --------------------------------------------------------
-    # ALREADY PAID
-    # --------------------------------------------------------
-
     paid = await get_paid_purchase(
         user_id,
         code,
     )
-
     if paid:
-
         return await call.message.answer(
             "✅ Kamu sudah membeli file ini."
         )
-
     # --------------------------------------------------------
-    # EXISTING ACTIVE TRANSACTION
+    # Jika ada satu active, tampilkan transaksi tersebut.
+    # Jika Cashi + Manual sama-sama aktif, tampilkan pilihan
+    # metode agar user bisa masuk ke transaksi masing-masing.
     # --------------------------------------------------------
-
-    existing = await get_active_purchase(
+    active_rows = await fetch(
+        """
+        SELECT *
+        FROM file_purchases
+        WHERE user_id=$1
+          AND file_code=$2
+          AND status IN ('pending','verifying')
+        ORDER BY id DESC
+        LIMIT 10
+        """,
         user_id,
         code,
     )
-
-    if existing:
-
-        payment_id = str(
-            existing.get("payment_id")
-            or ""
-        ).strip()
-
-        if payment_id.startswith(
-            "CASHI-"
-        ):
-
+    if active_rows:
+        methods = {
+            purchase_method(row)
+            for row in active_rows
+        }
+        if methods == {"cashi"}:
             return await show_existing_cashi(
                 call,
-                existing,
+                active_rows[0],
                 file,
             )
-
-        if payment_id.startswith(
-            "MANUAL-"
-        ):
-
+        if methods == {"manual"}:
             return await show_existing_manual(
                 call,
-                existing,
+                active_rows[0],
                 file,
             )
-
-    # --------------------------------------------------------
-    # CHOOSE PAYMENT
-    # --------------------------------------------------------
-
+        if "cashi" in methods or "manual" in methods:
+            await call.message.answer(
+                (
+                    "⏳ <b>Kamu sudah memiliki pembayaran "
+                    "yang sedang aktif.</b>\n\n"
+                    "Kamu bisa melanjutkan salah satu "
+                    "metode pembayaran di bawah."
+                ),
+                parse_mode="HTML",
+                reply_markup=payment_method_keyboard(
+                    code
+                ),
+            )
+            return
     await call.message.answer(
         (
             "💳 <b>PILIH METODE PEMBAYARAN</b>\n\n"
@@ -866,205 +844,153 @@ async def choose_payment(
             code
         ),
     )
-
-
 # ============================================================
 # BUY ALIAS
 # ============================================================
-
 @router.callback_query(
     F.data.startswith("buy:")
 )
 async def buy_payment_alias(
     call: CallbackQuery,
 ):
-
     code = call.data.split(
         ":",
         1,
     )[1].strip()
-
-    # Ubah ke flow payment utama
     call.data = f"pay:{code}"
-
     return await choose_payment(
         call
     )
-
-
 # ============================================================
 # CASHI ENTRY
 # ============================================================
-
 @router.callback_query(
     F.data.startswith("cashi:")
 )
 async def cashi_payment(
     call: CallbackQuery,
 ):
-
     await call.answer(
         "⏳ Menyiapkan Cashi..."
     )
-
+    if not AUTO_PAYMENT_ENABLED:
+        return await call.message.answer(
+            "❌ Pembayaran Cashi sedang tidak tersedia."
+        )
     try:
-
         code = call.data.split(
             ":",
             1,
         )[1].strip()
-
     except (
         AttributeError,
         IndexError,
     ):
-
         return await call.message.answer(
             "❌ Code tidak valid."
         )
-
     file = await get_file_by_code(
         code
     )
-
     if not file:
-
         return await call.message.answer(
             "❌ File tidak ditemukan."
         )
-
     price = safe_int(
         file.get("price")
     )
-
     if price <= 0:
-
         return await call.message.answer(
             "❌ Harga file tidak valid."
         )
-
     return await create_cashi_payment(
         call,
         code,
         file,
     )
-
-
 # ============================================================
 # MANUAL ENTRY
 # ============================================================
-
 @router.callback_query(
     F.data.startswith("manual:")
 )
 async def manual_payment(
     call: CallbackQuery,
 ):
-
     await call.answer(
         "⏳ Menyiapkan QR manual..."
     )
-
+    if not MANUAL_PAYMENT_ENABLED:
+        return await call.message.answer(
+            "❌ Pembayaran manual sedang tidak tersedia."
+        )
     try:
-
         code = call.data.split(
             ":",
             1,
         )[1].strip()
-
     except (
         AttributeError,
         IndexError,
     ):
-
         return await call.message.answer(
             "❌ Code tidak valid."
         )
-
     file = await get_file_by_code(
         code
     )
-
     if not file:
-
         return await call.message.answer(
             "❌ File tidak ditemukan."
         )
-
     price = safe_int(
         file.get("price")
     )
-
     if price <= 0:
-
         return await call.message.answer(
             "❌ Harga file tidak valid."
         )
-
     return await create_manual_payment(
         call,
         code,
         file,
     )
-
-
 # ============================================================
-# CREATE / REUSE SINGLE PURCHASE
+# CREATE / REUSE METHOD PURCHASE
 # ============================================================
-
 async def get_or_create_purchase(
     user_id: int,
     code: str,
     file,
     payment_prefix: str,
 ):
-
-    # --------------------------------------------------------
-    # PAID
-    # --------------------------------------------------------
-
     paid = await get_paid_purchase(
         user_id,
         code,
     )
-
     if paid:
-
         return {
             "purchase": paid,
             "already_paid": True,
             "existing": True,
         }
-
-    # --------------------------------------------------------
-    # ACTIVE
-    # --------------------------------------------------------
-
-    existing = await get_active_purchase(
+    existing = await get_active_method_purchase(
         user_id,
         code,
+        payment_prefix,
     )
-
     if existing:
-
         return {
             "purchase": existing,
             "already_paid": False,
             "existing": True,
         }
-
-    # --------------------------------------------------------
-    # NEW PAYMENT ID
-    # --------------------------------------------------------
-
     payment_id = (
         f"{payment_prefix}"
         f"{user_id}-"
         f"{secrets.token_hex(8)}"
     )
-
     try:
-
         purchase = await fetchrow(
             """
             INSERT INTO file_purchases
@@ -1082,7 +1008,8 @@ async def get_or_create_purchase(
                 expires_at,
                 qr_message_id,
                 qr_chat_id,
-                media_session_id
+                media_session_id,
+                gateway_order_id
             )
             VALUES
             (
@@ -1099,29 +1026,8 @@ async def get_or_create_purchase(
                 NULL,
                 NULL,
                 NULL,
+                NULL,
                 NULL
-            )
-            ON CONFLICT (user_id, file_code)
-            DO UPDATE SET
-                owner_id=EXCLUDED.owner_id,
-                paid_price=EXCLUDED.paid_price,
-                payment_id=EXCLUDED.payment_id,
-                status='pending',
-                created_at=NOW(),
-                paid_at=NULL,
-                qr_image=NULL,
-                payment_url=NULL,
-                expires_at=NULL,
-                qr_message_id=NULL,
-                qr_chat_id=NULL,
-                media_session_id=NULL
-            WHERE file_purchases.status IN (
-                'failed',
-                'rejected',
-                'expired',
-                'cancel',
-                'cancelled',
-                'canceled'
             )
             RETURNING *
             """,
@@ -1131,59 +1037,51 @@ async def get_or_create_purchase(
             safe_int(file.get("price")),
             payment_id,
         )
-
-    except Exception:
-
+    except Exception as exc:
         logger.exception(
-            "CREATE/REUSE PURCHASE ERROR"
-        )
-
-        return None
-
-    if not purchase:
-
-        # Kemungkinan transaksi aktif dibuat request lain
-        existing = await get_active_purchase(
+            (
+                "CREATE PURCHASE ERROR "
+                "| user=%s | code=%s | method=%s"
+            ),
             user_id,
             code,
+            payment_prefix,
         )
-
+        # Race: request lain mungkin baru saja membuat
+        # transaksi method yang sama.
+        existing = await get_active_method_purchase(
+            user_id,
+            code,
+            payment_prefix,
+        )
         if existing:
-
             return {
                 "purchase": existing,
                 "already_paid": False,
                 "existing": True,
             }
-
         paid = await get_paid_purchase(
             user_id,
             code,
         )
-
         if paid:
-
             return {
                 "purchase": paid,
                 "already_paid": True,
                 "existing": True,
             }
-
         return None
-
+    if not purchase:
+        return None
     return {
         "purchase": purchase,
         "already_paid": False,
         "existing": False,
     }
-
-
 # ============================================================
 # CASHI HEADERS
 # ============================================================
-
 def cashi_headers() -> dict:
-
     return {
         "x-api-key": str(
             CASHI_API_KEY or ""
@@ -1192,78 +1090,63 @@ def cashi_headers() -> dict:
         "Accept": "application/json",
         "User-Agent": "MKTPLBot/1.0",
     }
-
-
 # ============================================================
 # CASHI CREATE ORDER
 # ============================================================
-
 async def cashi_create_order(
     amount: int,
     order_id: str,
 ):
-
     if not CASHI_API_KEY:
-
-        logger.error(
-            "CASHI_API_KEY BELUM DISET"
-        )
-
         return {
             "ok": False,
             "definitive": True,
             "data": None,
-            "error": "CASHI_API_KEY belum dikonfigurasi.",
+            "error": (
+                "CASHI_API_KEY belum dikonfigurasi."
+            ),
         }
-
     payload = {
         "amount": int(amount),
         "order_id": str(order_id),
         "kode_channel": "QRIS_CUSTOM",
     }
-
     logger.info(
-        "CASHI CREATE REQUEST | order=%s | amount=%s",
+        (
+            "CASHI CREATE REQUEST "
+            "| order=%s | amount=%s"
+        ),
         order_id,
         amount,
     )
-
     try:
-
         timeout = aiohttp.ClientTimeout(
             total=35,
             connect=10,
             sock_read=25,
         )
-
         async with aiohttp.ClientSession(
             timeout=timeout
         ) as session:
-
             async with session.post(
                 CASHI_CREATE_URL,
                 headers=cashi_headers(),
                 json=payload,
             ) as response:
-
                 raw_text = await response.text()
-
                 logger.info(
-                    "CASHI CREATE RESPONSE | HTTP=%s | BODY=%s",
+                    (
+                        "CASHI CREATE RESPONSE "
+                        "| HTTP=%s | BODY=%s"
+                    ),
                     response.status,
                     raw_text[:3000],
                 )
-
                 try:
-
                     data = json.loads(
                         raw_text
                     )
-
                 except Exception:
-
-                    # HTTP 5xx / proxy / HTML response:
-                    # jangan buat transaksi manual kedua.
                     return {
                         "ok": False,
                         "definitive": (
@@ -1276,30 +1159,22 @@ async def cashi_create_order(
                             "Response Cashi bukan JSON."
                         ),
                     }
-
-                # ------------------------------------------------
-                # HTTP ERROR
-                # ------------------------------------------------
-
-                if response.status < 200 or response.status >= 300:
-
-                    # 4xx = Cashi definitively menolak request.
-                    # 5xx = hasil bisa unknown.
+                if (
+                    response.status < 200
+                    or response.status >= 300
+                ):
                     definitive = (
                         400
                         <= response.status
                         < 500
                     )
-
-                    # Jika response error ternyata membawa
-                    # order ID, anggap hasil unknown.
-                    returned_order = extract_cashi_order_id(
-                        data
+                    returned_order = (
+                        extract_cashi_order_id(
+                            data
+                        )
                     )
-
                     if returned_order:
                         definitive = False
-
                     return {
                         "ok": False,
                         "definitive": definitive,
@@ -1308,34 +1183,25 @@ async def cashi_create_order(
                             f"HTTP {response.status}"
                         ),
                     }
-
-                # ------------------------------------------------
-                # SUCCESS FLAG
-                # ------------------------------------------------
-
                 success = data.get(
                     "success"
                 )
-
                 if success is False:
-
-                    returned_order = extract_cashi_order_id(
-                        data
+                    returned_order = (
+                        extract_cashi_order_id(
+                            data
+                        )
                     )
-
-                    # Kalau ada order ID, mungkin order sudah dibuat.
                     if returned_order:
-
                         return {
                             "ok": True,
                             "definitive": False,
                             "data": data,
                             "error": (
-                                "Cashi mengembalikan success=false "
+                                "Cashi success=false "
                                 "tetapi order ID tersedia."
                             ),
                         }
-
                     return {
                         "ok": False,
                         "definitive": True,
@@ -1346,33 +1212,27 @@ async def cashi_create_order(
                             or "Cashi menolak pembayaran."
                         ),
                     }
-
                 return {
                     "ok": True,
                     "definitive": False,
                     "data": data,
                     "error": None,
                 }
-
     except asyncio.CancelledError:
         raise
-
     except (
         asyncio.TimeoutError,
         aiohttp.ClientConnectionError,
         aiohttp.ClientPayloadError,
         aiohttp.ServerTimeoutError,
     ):
-
-        # SANGAT PENTING:
-        # Timeout tidak berarti order gagal.
-        # Bisa saja Cashi sudah membuat order.
-        # Jadi JANGAN fallback manual.
         logger.exception(
-            "CASHI CREATE UNKNOWN RESULT | order=%s",
+            (
+                "CASHI CREATE UNKNOWN RESULT "
+                "| order=%s"
+            ),
             order_id,
         )
-
         return {
             "ok": False,
             "definitive": False,
@@ -1381,14 +1241,14 @@ async def cashi_create_order(
                 "Timeout/koneksi Cashi."
             ),
         }
-
     except Exception:
-
         logger.exception(
-            "CASHI CREATE ORDER EXCEPTION | order=%s",
+            (
+                "CASHI CREATE ORDER EXCEPTION "
+                "| order=%s"
+            ),
             order_id,
         )
-
         return {
             "ok": False,
             "definitive": False,
@@ -1397,132 +1257,166 @@ async def cashi_create_order(
                 "Error koneksi Cashi."
             ),
         }
-
-
 # ============================================================
 # CASHI CHECK STATUS
 # ============================================================
-
 async def cashi_check_status(
     order_id: str,
 ):
-
     if not CASHI_API_KEY:
         return None
-
     order_id = str(
         order_id or ""
     ).strip()
-
     if not order_id:
         return None
-
     url = (
         f"{CASHI_BASE_URL}"
         f"/api/check-status/"
         f"{order_id}"
     )
-
     logger.info(
         "CASHI STATUS REQUEST | order=%s",
         order_id,
     )
-
     try:
-
         timeout = aiohttp.ClientTimeout(
             total=25,
             connect=10,
             sock_read=20,
         )
-
         async with aiohttp.ClientSession(
             timeout=timeout
         ) as session:
-
             async with session.get(
                 url,
                 headers=cashi_headers(),
             ) as response:
-
                 raw_text = await response.text()
-
                 logger.info(
-                    "CASHI STATUS RESPONSE | HTTP=%s | BODY=%s",
+                    (
+                        "CASHI STATUS RESPONSE "
+                        "| HTTP=%s | BODY=%s"
+                    ),
                     response.status,
                     raw_text[:3000],
                 )
-
                 try:
-
                     data = json.loads(
                         raw_text
                     )
-
                 except Exception:
-
                     return None
-
-                if response.status < 200 or response.status >= 300:
-
+                if (
+                    response.status < 200
+                    or response.status >= 300
+                ):
                     return None
-
                 return data
-
     except asyncio.CancelledError:
         raise
-
     except Exception:
-
         logger.exception(
             "CASHI CHECK STATUS EXCEPTION"
         )
-
         return None
-
-
 # ============================================================
 # DOWNLOAD CASHI QR
 # ============================================================
-
 async def download_qr_from_cashi(
     qr_url: str,
 ) -> bytes | None:
-
     if not qr_url:
         return None
-
     qr_url = str(
         qr_url
     ).strip()
-
+    # ========================================================
+    # DATA URI
+    # ========================================================
+    if qr_url.startswith(
+        "data:image/"
+    ):
+        try:
+            header, encoded = (
+                qr_url.split(
+                    ",",
+                    1,
+                )
+            )
+            if ";base64" not in (
+                header.lower()
+            ):
+                logger.error(
+                    "CASHI QR DATA URI BUKAN BASE64"
+                )
+                return None
+            content = base64.b64decode(
+                encoded,
+                validate=True,
+            )
+            if not content:
+                logger.error(
+                    "CASHI QR DATA URI KOSONG"
+                )
+                return None
+            is_png = content.startswith(
+                b"\x89PNG\r\n\x1a\n"
+            )
+            is_jpeg = content.startswith(
+                b"\xff\xd8\xff"
+            )
+            is_webp = (
+                len(content) >= 12
+                and content[:4] == b"RIFF"
+                and content[8:12] == b"WEBP"
+            )
+            if not (
+                is_png
+                or is_jpeg
+                or is_webp
+            ):
+                logger.error(
+                    "CASHI QR DATA URI BUKAN IMAGE VALID"
+                )
+                return None
+            logger.info(
+                (
+                    "CASHI QR DATA URI DECODED "
+                    "| size=%s"
+                ),
+                len(content),
+            )
+            return content
+        except Exception:
+            logger.exception(
+                "DECODE CASHI QR DATA URI ERROR"
+            )
+            return None
+    # ========================================================
+    # HTTP / HTTPS
+    # ========================================================
     if not qr_url.startswith(
         (
             "http://",
             "https://",
         )
     ):
-
         logger.error(
             "INVALID CASHI QR URL | %s",
-            qr_url,
+            qr_url[:200],
         )
-
         return None
-
     logger.info(
         "DOWNLOAD CASHI QR | URL=%s",
         qr_url,
     )
-
     try:
-
         timeout = aiohttp.ClientTimeout(
             total=30,
             connect=10,
             sock_read=20,
         )
-
         headers = {
             "User-Agent": (
                 "Mozilla/5.0 "
@@ -1539,19 +1433,15 @@ async def download_qr_from_cashi(
                 "*/*;q=0.8"
             ),
         }
-
         async with aiohttp.ClientSession(
             timeout=timeout
         ) as session:
-
             async with session.get(
                 qr_url,
                 headers=headers,
                 allow_redirects=True,
             ) as response:
-
                 content = await response.read()
-
                 content_type = (
                     response.headers.get(
                         "Content-Type",
@@ -1560,51 +1450,34 @@ async def download_qr_from_cashi(
                     .lower()
                     .strip()
                 )
-
                 logger.info(
                     (
-                        "CASHI QR RESPONSE | "
-                        "HTTP=%s | TYPE=%s | SIZE=%s | FINAL_URL=%s"
+                        "CASHI QR RESPONSE "
+                        "| HTTP=%s | TYPE=%s "
+                        "| SIZE=%s | FINAL_URL=%s"
                     ),
                     response.status,
                     content_type,
                     len(content),
                     str(response.url),
                 )
-
                 if response.status != 200:
-
                     logger.error(
                         (
-                            "CASHI QR DOWNLOAD FAILED | "
-                            "HTTP=%s | BODY=%s"
+                            "CASHI QR DOWNLOAD FAILED "
+                            "| HTTP=%s"
                         ),
                         response.status,
-                        content[:500],
                     )
-
                     return None
-
                 if not content:
-
-                    logger.error(
-                        "CASHI QR EMPTY RESPONSE"
-                    )
-
                     return None
-
-                # ------------------------------------------------
-                # VALIDATE IMAGE
-                # ------------------------------------------------
-
                 is_png = content.startswith(
                     b"\x89PNG"
                 )
-
                 is_jpeg = content.startswith(
                     b"\xff\xd8\xff"
                 )
-
                 is_webp = (
                     content.startswith(
                         b"RIFF"
@@ -1612,120 +1485,82 @@ async def download_qr_from_cashi(
                     and content[8:12]
                     == b"WEBP"
                 )
-
                 if (
                     "image/" not in content_type
                     and not is_png
                     and not is_jpeg
                     and not is_webp
                 ):
-
                     logger.error(
                         (
-                            "CASHI QR RESPONSE BUKAN IMAGE | "
-                            "TYPE=%s | FIRST_BYTES=%s"
+                            "CASHI QR RESPONSE "
+                            "BUKAN IMAGE | TYPE=%s"
                         ),
                         content_type,
-                        content[:100],
                     )
-
-                    try:
-
-                        text = content.decode(
-                            "utf-8",
-                            errors="ignore",
-                        )
-
-                        logger.error(
-                            "CASHI QR BODY TEXT=%s",
-                            text[:1500],
-                        )
-
-                    except Exception:
-                        pass
-
                     return None
-
                 return content
-
     except asyncio.CancelledError:
         raise
-
     except Exception:
-
         logger.exception(
             "DOWNLOAD CASHI QR EXCEPTION"
         )
-
         return None
-
-
 # ============================================================
 # SEND CASHI QR
 # ============================================================
-
 async def send_cashi_qr(
     message: Message,
     qr_url: str,
     caption: str,
     reply_markup=None,
 ):
-
     qr_bytes = await download_qr_from_cashi(
         qr_url
     )
-
     if not qr_bytes:
-
         return None
-
     try:
-
         photo = BufferedInputFile(
             qr_bytes,
             filename="cashi_qris.png",
         )
-
         sent = await message.answer_photo(
             photo=photo,
             caption=caption,
             parse_mode="HTML",
             reply_markup=reply_markup,
         )
-
         logger.info(
-            "CASHI QR SENT TO TELEGRAM | message_id=%s",
+            (
+                "CASHI QR SENT "
+                "| message_id=%s"
+            ),
             sent.message_id,
         )
-
         return sent
-
     except Exception:
-
         logger.exception(
             "TELEGRAM SEND CASHI QR ERROR"
         )
-
         return None
-
-
 # ============================================================
 # CASHI PAYMENT KEYBOARD
 # ============================================================
-
 async def payment_check_keyboard(
     code: str,
-    payment_id: str,
+    purchase_id: int,
 ):
-
     token = await create_callback_token(
         "paymentcheck",
         {
             "code": str(code).strip(),
-            "payment_id": str(payment_id).strip(),
+            "purchase_id": int(
+                purchase_id
+            ),
         },
     )
-
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -1744,23 +1579,18 @@ async def payment_check_keyboard(
             ],
         ]
     )
-
-
 # ============================================================
 # MANUAL KEYBOARD
 # ============================================================
-
 async def manual_payment_keyboard(
     code: str,
 ):
-
     token = await create_callback_token(
         "manualcheck",
         {
             "code": str(code).strip(),
         },
     )
-
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -1779,53 +1609,62 @@ async def manual_payment_keyboard(
             ],
         ]
     )
-
-
 # ============================================================
 # SHOW EXISTING CASHI
 # ============================================================
-
 async def show_existing_cashi(
     call: CallbackQuery,
     purchase,
     file,
 ):
-
-    payment_id = str(
-        purchase.get("payment_id")
+    purchase_id = safe_int(
+        purchase.get("id")
+    )
+    if purchase_id <= 0:
+        return await call.message.answer(
+            "❌ ID transaksi tidak valid."
+        )
+    gateway_order_id = str(
+        purchase.get(
+            "gateway_order_id"
+        )
         or ""
     ).strip()
-
-    if not payment_id:
-
+    # Compatibility dengan transaksi lama:
+    # sebelum gateway_order_id ditambahkan, payment_id
+    # bisa saja berisi order Cashi.
+    if not gateway_order_id:
+        payment_id = str(
+            purchase.get(
+                "payment_id"
+            )
+            or ""
+        ).strip()
+        if (
+            not payment_id.startswith(
+                "CASHI-"
+            )
+            and payment_id
+        ):
+            gateway_order_id = payment_id
+    if not gateway_order_id:
         return await call.message.answer(
             "❌ ID pembayaran Cashi tidak valid."
         )
-
-    # --------------------------------------------------------
-    # CHECK CURRENT STATUS FIRST
-    # --------------------------------------------------------
-
     status_data = await cashi_check_status(
-        payment_id
+        gateway_order_id
     )
-
     if status_data:
-
         status = extract_cashi_status(
             status_data
         )
-
         if status in SUCCESS_STATUSES:
-
             return await process_existing_success(
                 call,
                 purchase,
                 file,
             )
-
         if status in FAILED_STATUSES:
-
             changed = await fetchrow(
                 """
                 UPDATE file_purchases
@@ -1835,11 +1674,9 @@ async def show_existing_cashi(
                 RETURNING *
                 """,
                 status,
-                purchase["id"],
+                purchase_id,
             )
-
             if changed:
-
                 return await call.message.answer(
                     (
                         "⚠️ <b>Pembayaran Cashi sebelumnya "
@@ -1851,26 +1688,21 @@ async def show_existing_cashi(
                         file["code"]
                     ),
                 )
-
     qr_url = str(
         purchase.get("qr_image")
         or ""
     ).strip()
-
     payment_url = str(
         purchase.get("payment_url")
         or ""
     ).strip()
-
     keyboard = await payment_check_keyboard(
         file["code"],
-        payment_id,
+        purchase_id,
     )
-
     price = safe_int(
         file.get("price")
     )
-
     caption = (
         "💳 <b>PEMBAYARAN CASHI</b>\n\n"
         f"📄 <b>{clean_html(file.get('title'))}</b>\n\n"
@@ -1882,22 +1714,14 @@ async def show_existing_cashi(
         "<b>🔄 Cek Pembayaran</b>.\n\n"
         "⚠️ Jangan melakukan pembayaran dua kali."
     )
-
-    # --------------------------------------------------------
-    # QR AVAILABLE
-    # --------------------------------------------------------
-
     if qr_url:
-
         sent = await send_cashi_qr(
             call.message,
             qr_url,
             caption,
             keyboard,
         )
-
         if sent:
-
             await execute(
                 """
                 UPDATE file_purchases
@@ -1909,21 +1733,14 @@ async def show_existing_cashi(
                 """,
                 sent.message_id,
                 sent.chat.id,
-                purchase["id"],
+                purchase_id,
             )
-
             return
-
-        # QR URL tersimpan tetapi download gagal.
-        # Jangan buat transaksi baru.
         if payment_url:
-
             await call.message.answer(
                 (
                     "⚠️ <b>QR tidak dapat ditampilkan.</b>\n\n"
-                    "Pembayaran Cashi tetap aktif.\n"
-                    "Gunakan tombol di bawah untuk membuka "
-                    "halaman pembayaran."
+                    "Pembayaran Cashi tetap aktif."
                 ),
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(
@@ -1940,28 +1757,8 @@ async def show_existing_cashi(
                     ]
                 ),
             )
-
             return
-
-        await call.message.answer(
-            (
-                "⚠️ <b>QR Cashi belum dapat ditampilkan.</b>\n\n"
-                "Transaksi tetap aktif. Jangan membuat "
-                "pembayaran baru.\n\n"
-                "Silakan coba lagi beberapa saat."
-            ),
-            parse_mode="HTML",
-            reply_markup=keyboard,
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # PAYMENT URL
-    # --------------------------------------------------------
-
     if payment_url:
-
         await call.message.answer(
             (
                 "💳 <b>PEMBAYARAN CASHI</b>\n\n"
@@ -1990,51 +1787,36 @@ async def show_existing_cashi(
                 ]
             ),
         )
-
         return
-
-    # --------------------------------------------------------
-    # NO QR / NO URL
-    # --------------------------------------------------------
-
     await call.message.answer(
         (
             "⚠️ <b>Pembayaran Cashi sudah dibuat.</b>\n\n"
-            "Namun QR/link pembayaran belum tersedia.\n\n"
+            "QR/link pembayaran belum tersedia.\n\n"
             "❗ Jangan membuat transaksi baru.\n"
             "Silakan coba cek kembali beberapa saat lagi."
         ),
         parse_mode="HTML",
         reply_markup=keyboard,
     )
-
-
 # ============================================================
 # SHOW EXISTING MANUAL
 # ============================================================
-
 async def show_existing_manual(
     call: CallbackQuery,
     purchase,
     file,
 ):
-
-    if not MANUAL_QR_FILE_ID:
-
+    if not MANUAL_PAYMENT_ENABLED:
         return await call.message.answer(
             "❌ QR manual sedang tidak tersedia."
         )
-
     keyboard = await manual_payment_keyboard(
         file["code"]
     )
-
     price = safe_int(
         file.get("price")
     )
-
     try:
-
         msg = await call.message.answer_photo(
             photo=MANUAL_QR_FILE_ID,
             caption=(
@@ -2050,7 +1832,6 @@ async def show_existing_manual(
             parse_mode="HTML",
             reply_markup=keyboard,
         )
-
         await execute(
             """
             UPDATE file_purchases
@@ -2064,231 +1845,108 @@ async def show_existing_manual(
             msg.chat.id,
             purchase["id"],
         )
-
     except Exception:
-
         logger.exception(
             "SEND EXISTING MANUAL ERROR"
         )
-
         return await call.message.answer(
             "❌ Gagal mengirim QR manual."
         )
-
-
 # ============================================================
 # CREATE CASHI PAYMENT
 # ============================================================
-
 async def create_cashi_payment(
     call: CallbackQuery,
     code: str,
     file,
 ):
-
+    if not AUTO_PAYMENT_ENABLED:
+        return await call.message.answer(
+            "❌ Pembayaran Cashi sedang tidak tersedia."
+        )
     user_id = int(
         call.from_user.id
     )
-
     price = safe_int(
         file.get("price")
     )
-
-    # --------------------------------------------------------
-    # ALREADY PAID
-    # --------------------------------------------------------
-
     paid = await get_paid_purchase(
         user_id,
         code,
     )
-
     if paid:
-
         return await call.message.answer(
             "✅ Kamu sudah membeli file ini."
         )
-
     # --------------------------------------------------------
-    # EXISTING ACTIVE
+    # ONLY CASHI ACTIVE
     # --------------------------------------------------------
-
-    existing = await get_active_purchase(
+    existing = await get_active_method_purchase(
         user_id,
         code,
+        "CASHI-",
     )
-
     if existing:
-
-        payment_id = str(
-            existing.get("payment_id")
-            or ""
-        ).strip()
-
-        if payment_id.startswith(
-            "MANUAL-"
-        ):
-
-            return await call.message.answer(
-                (
-                    "⏳ <b>Pembayaran manual masih aktif.</b>\n\n"
-                    "Selesaikan atau tunggu verifikasi "
-                    "pembayaran manual tersebut."
-                ),
-                parse_mode="HTML",
-            )
-
-        if payment_id.startswith(
-            "CASHI-"
-        ):
-
-            return await show_existing_cashi(
-                call,
-                existing,
-                file,
-            )
-
-    # --------------------------------------------------------
-    # CREATE / REUSE
-    # --------------------------------------------------------
-
+        return await show_existing_cashi(
+            call,
+            existing,
+            file,
+        )
+    # Manual active TIDAK memblokir Cashi.
+    # Ini inti perubahan arsitektur.
     result = await get_or_create_purchase(
         user_id=user_id,
         code=code,
         file=file,
         payment_prefix="CASHI-",
     )
-
     if not result:
-
         return await call.message.answer(
             "❌ Gagal membuat transaksi pembayaran."
         )
-
     purchase = result["purchase"]
-
     if result.get(
         "already_paid"
     ):
-
         return await call.message.answer(
             "✅ Kamu sudah membeli file ini."
         )
-
     payment_id = str(
         purchase.get("payment_id")
         or ""
     ).strip()
-
-    # --------------------------------------------------------
-    # RACE CONDITION
-    # --------------------------------------------------------
-
-    if payment_id.startswith(
-        "MANUAL-"
-    ):
-
-        return await call.message.answer(
-            (
-                "⏳ Pembayaran manual untuk file ini "
-                "sudah aktif."
-            ),
-        )
-
     if not payment_id.startswith(
         "CASHI-"
     ):
-
         return await call.message.answer(
             "❌ ID transaksi Cashi tidak valid."
         )
-
     await call.answer(
         "⏳ Membuat pembayaran Cashi..."
     )
-
     # --------------------------------------------------------
     # CREATE CASHI
     # --------------------------------------------------------
-
     result_cashi = await cashi_create_order(
         amount=price,
         order_id=payment_id,
     )
-
-    # --------------------------------------------------------
-    # CASHI DEFINITIVE FAILURE
-    # --------------------------------------------------------
-
     if not result_cashi.get(
         "ok"
     ):
-
         if result_cashi.get(
             "definitive"
         ):
-
             logger.warning(
                 (
-                    "CASHI DEFINITIVE FAILED | "
-                    "purchase=%s | payment=%s | error=%s"
+                    "CASHI DEFINITIVE FAILED "
+                    "| purchase=%s | local=%s "
+                    "| error=%s"
                 ),
                 purchase["id"],
                 payment_id,
                 result_cashi.get("error"),
             )
-
-            # ------------------------------------------------
-            # OPTIONAL MANUAL FALLBACK
-            # SAME PURCHASE ROW
-            # ------------------------------------------------
-
-            if MANUAL_QR_FILE_ID:
-
-                manual_payment_id = (
-                    f"MANUAL-{user_id}-"
-                    f"{secrets.token_hex(8)}"
-                )
-
-                converted = await fetchrow(
-                    """
-                    UPDATE file_purchases
-                    SET
-                        payment_id=$1,
-                        status='pending',
-                        qr_image=NULL,
-                        payment_url=NULL,
-                        expires_at=NULL,
-                        qr_message_id=NULL,
-                        qr_chat_id=NULL
-                    WHERE id=$2
-                      AND status='pending'
-                      AND payment_id=$3
-                    RETURNING *
-                    """,
-                    manual_payment_id,
-                    purchase["id"],
-                    payment_id,
-                )
-
-                if converted:
-
-                    await call.message.answer(
-                        (
-                            "⚠️ <b>Cashi tidak dapat membuat "
-                            "pembayaran.</b>\n\n"
-                            "Karena itu transaksi yang sama "
-                            "dialihkan ke <b>QR Manual</b>."
-                        ),
-                        parse_mode="HTML",
-                    )
-
-                    return await send_manual_payment(
-                        call,
-                        converted,
-                        file,
-                    )
-
             await execute(
                 """
                 UPDATE file_purchases
@@ -2300,74 +1958,76 @@ async def create_cashi_payment(
                 purchase["id"],
                 payment_id,
             )
-
             return await call.message.answer(
                 (
                     "❌ <b>Pembayaran Cashi gagal dibuat.</b>\n\n"
-                    "Silakan coba lagi."
+                    "Silakan pilih metode pembayaran lain."
                 ),
                 parse_mode="HTML",
                 reply_markup=payment_method_keyboard(
                     code
                 ),
             )
-
-        # ----------------------------------------------------
-        # UNKNOWN RESULT
-        # ----------------------------------------------------
-        #
+        # Unknown result:
         # JANGAN fallback manual.
-        # Cashi mungkin sudah membuat order.
-        #
-
         keyboard = await payment_check_keyboard(
             code,
-            payment_id,
+            purchase["id"],
         )
-
         return await call.message.answer(
             (
                 "⚠️ <b>Cashi belum memberikan hasil yang pasti.</b>\n\n"
-                "Transaksi tetap disimpan dan <b>tidak dibuat "
-                "ulang</b> untuk mencegah pembayaran ganda.\n\n"
+                "Transaksi tetap disimpan dan "
+                "<b>tidak dibuat ulang</b> untuk mencegah "
+                "pembayaran ganda.\n\n"
                 "Silakan tunggu beberapa saat lalu tekan "
                 "<b>🔄 Cek Pembayaran</b>."
             ),
             parse_mode="HTML",
             reply_markup=keyboard,
         )
-
-    # ========================================================
-    # CASHI SUCCESS
-    # ========================================================
-
     cashi_data = (
         result_cashi.get("data")
         or {}
     )
-
     cashi_order_id = extract_cashi_order_id(
-        cashi_data,
-        fallback=payment_id,
+        cashi_data
     )
-
+    if not cashi_order_id:
+        # Kalau API tidak mengembalikan order ID,
+        # kita tidak boleh mengarang order ID baru.
+        await execute(
+            """
+            UPDATE file_purchases
+            SET status='failed'
+            WHERE id=$1
+              AND status='pending'
+            """,
+            purchase["id"],
+        )
+        return await call.message.answer(
+            (
+                "❌ Cashi tidak mengembalikan "
+                "ID transaksi yang valid."
+            ),
+            reply_markup=payment_method_keyboard(
+                code
+            ),
+        )
     qr_url = extract_cashi_qr_url(
         cashi_data
     )
-
     payment_url = extract_cashi_payment_url(
         cashi_data
     )
-
     expires_at = extract_cashi_expires_at(
         cashi_data
     )
-
     logger.info(
         (
-            "CASHI CREATED | purchase=%s | "
-            "local_order=%s | cashi_order=%s | "
-            "qr=%s | payment_url=%s | expires=%s"
+            "CASHI CREATED | purchase=%s "
+            "| local=%s | gateway=%s "
+            "| qr=%s | url=%s | expires=%s"
         ),
         purchase["id"],
         payment_id,
@@ -2376,50 +2036,57 @@ async def create_cashi_payment(
         bool(payment_url),
         expires_at,
     )
-
     # --------------------------------------------------------
     # SAVE CASHI DATA
     # --------------------------------------------------------
-
-    saved = await fetchrow(
-        """
-        UPDATE file_purchases
-        SET
-            payment_id=$1,
-            qr_image=$2,
-            payment_url=$3,
-            expires_at=$4
-        WHERE id=$5
-          AND status='pending'
-        RETURNING *
-        """,
-        cashi_order_id,
-        qr_url or None,
-        payment_url or None,
-        expires_at,
-        purchase["id"],
-    )
-
-    if not saved:
-
-        logger.error(
-            "CASHI PURCHASE SAVE FAILED | purchase=%s",
+    try:
+        saved = await fetchrow(
+            """
+            UPDATE file_purchases
+            SET
+                gateway_order_id=$1,
+                qr_image=$2,
+                payment_url=$3,
+                expires_at=$4
+            WHERE id=$5
+              AND status='pending'
+              AND payment_id=$6
+            RETURNING *
+            """,
+            cashi_order_id,
+            qr_url or None,
+            payment_url or None,
+            expires_at,
+            purchase["id"],
+            payment_id,
+        )
+    except Exception:
+        logger.exception(
+            (
+                "SAVE CASHI DATA ERROR "
+                "| purchase=%s"
+            ),
             purchase["id"],
         )
-
         return await call.message.answer(
             (
-                "❌ Pembayaran Cashi berhasil dibuat, "
-                "tetapi gagal disimpan ke database."
+                "⚠️ Pembayaran Cashi sudah dibuat, "
+                "tetapi data transaksi gagal disimpan."
             ),
             parse_mode="HTML",
         )
-
+    if not saved:
+        return await call.message.answer(
+            (
+                "❌ Transaksi Cashi berubah saat diproses.\n"
+                "Silakan cek kembali pembayaran."
+            ),
+            parse_mode="HTML",
+        )
     keyboard = await payment_check_keyboard(
         code,
-        cashi_order_id,
+        saved["id"],
     )
-
     caption = (
         "💳 <b>PEMBAYARAN CASHI</b>\n\n"
         f"📄 File:\n"
@@ -2437,24 +2104,14 @@ async def create_cashi_payment(
         "⚡ Pembayaran diverifikasi otomatis.\n"
         "⚠️ Jangan melakukan pembayaran dua kali."
     )
-
-    sent_message = None
-
-    # --------------------------------------------------------
-    # SEND QR BY DOWNLOADING FIRST
-    # --------------------------------------------------------
-
     if qr_url:
-
         sent_message = await send_cashi_qr(
             call.message,
             qr_url,
             caption,
             keyboard,
         )
-
         if sent_message:
-
             await execute(
                 """
                 UPDATE file_purchases
@@ -2463,36 +2120,24 @@ async def create_cashi_payment(
                     qr_chat_id=$2
                 WHERE id=$3
                   AND status='pending'
-                  AND payment_id=$4
                 """,
                 sent_message.message_id,
                 sent_message.chat.id,
                 saved["id"],
-                cashi_order_id,
             )
-
             return
-
         logger.error(
             (
-                "CASHI QR FAILED TO SEND | "
-                "purchase=%s | order=%s | qr=%s"
+                "CASHI QR FAILED TO SEND "
+                "| purchase=%s"
             ),
             saved["id"],
-            cashi_order_id,
-            qr_url,
         )
-
-    # --------------------------------------------------------
-    # QR FAILED BUT PAYMENT URL AVAILABLE
-    # --------------------------------------------------------
-
     if payment_url:
-
         await call.message.answer(
             (
                 f"{caption}\n\n"
-                "⚠️ QR tidak dapat ditampilkan sebagai gambar.\n"
+                "⚠️ QR tidak dapat ditampilkan.\n"
                 "Gunakan tombol <b>Bayar Sekarang</b>."
             ),
             parse_mode="HTML",
@@ -2516,182 +2161,98 @@ async def create_cashi_payment(
                 ]
             ),
         )
-
         return
-
-    # --------------------------------------------------------
-    # NO QR AND NO PAYMENT URL
-    # --------------------------------------------------------
-
     await call.message.answer(
         (
             "⚠️ <b>Pembayaran Cashi sudah dibuat.</b>\n\n"
-            "Namun QR/link belum dapat dikirim oleh Cashi.\n\n"
+            "QR/link belum dapat dikirim.\n\n"
             "❗ Jangan melakukan pembayaran kedua.\n"
-            "Silakan tekan <b>🔄 Cek Pembayaran</b> setelah "
-            "beberapa saat."
+            "Tekan <b>🔄 Cek Pembayaran</b> setelah beberapa saat."
         ),
         parse_mode="HTML",
         reply_markup=keyboard,
     )
-
-
 # ============================================================
 # CREATE MANUAL PAYMENT
 # ============================================================
-
 async def create_manual_payment(
     call: CallbackQuery,
     code: str,
     file,
 ):
-
-    if not MANUAL_QR_FILE_ID:
-
+    if not MANUAL_PAYMENT_ENABLED:
         return await call.message.answer(
             "❌ QR manual belum dikonfigurasi."
         )
-
     user_id = int(
         call.from_user.id
     )
-
-    # --------------------------------------------------------
-    # PAID
-    # --------------------------------------------------------
-
     paid = await get_paid_purchase(
         user_id,
         code,
     )
-
     if paid:
-
         return await call.message.answer(
             "✅ Kamu sudah membeli file ini."
         )
-
-    # --------------------------------------------------------
-    # EXISTING ACTIVE
-    # --------------------------------------------------------
-
-    existing = await get_active_purchase(
+    # ONLY MANUAL ACTIVE.
+    # Cashi aktif tetap boleh bersamaan.
+    existing = await get_active_method_purchase(
         user_id,
         code,
+        "MANUAL-",
     )
-
     if existing:
-
-        payment_id = str(
-            existing.get("payment_id")
-            or ""
-        ).strip()
-
-        if payment_id.startswith(
-            "CASHI-"
-        ):
-
-            return await call.message.answer(
-                (
-                    "⏳ <b>Pembayaran Cashi masih aktif.</b>\n\n"
-                    "Selesaikan transaksi Cashi terlebih dahulu.\n"
-                    "Bot tidak membuat transaksi manual kedua "
-                    "agar tidak terjadi pembayaran ganda."
-                ),
-                parse_mode="HTML",
-            )
-
-        if payment_id.startswith(
-            "MANUAL-"
-        ):
-
-            return await show_existing_manual(
-                call,
-                existing,
-                file,
-            )
-
-    # --------------------------------------------------------
-    # CREATE SINGLE MANUAL
-    # --------------------------------------------------------
-
+        return await show_existing_manual(
+            call,
+            existing,
+            file,
+        )
     result = await get_or_create_purchase(
         user_id=user_id,
         code=code,
         file=file,
         payment_prefix="MANUAL-",
     )
-
     if not result:
-
         return await call.message.answer(
             "❌ Gagal membuat transaksi."
         )
-
     purchase = result["purchase"]
-
     if result.get(
         "already_paid"
     ):
-
         return await call.message.answer(
             "✅ Kamu sudah membeli file ini."
         )
-
-    payment_id = str(
-        purchase.get("payment_id")
-        or ""
-    ).strip()
-
-    if payment_id.startswith(
-        "CASHI-"
-    ):
-
-        return await call.message.answer(
-            (
-                "⏳ Pembayaran Cashi untuk file ini "
-                "sudah aktif."
-            ),
-        )
-
     return await send_manual_payment(
         call,
         purchase,
         file,
     )
-
-
 # ============================================================
 # SEND MANUAL PAYMENT
 # ============================================================
-
 async def send_manual_payment(
     call: CallbackQuery,
     purchase,
     file,
 ):
-
-    if not MANUAL_QR_FILE_ID:
-
+    if not MANUAL_PAYMENT_ENABLED:
         return await call.message.answer(
             "❌ QR manual belum tersedia."
         )
-
     code = str(
         file.get("code")
         or ""
     ).strip()
-
     price = safe_int(
         file.get("price")
     )
-
     keyboard = await manual_payment_keyboard(
         code
     )
-
     try:
-
         msg = await call.message.answer_photo(
             photo=MANUAL_QR_FILE_ID,
             caption=(
@@ -2714,7 +2275,6 @@ async def send_manual_payment(
             parse_mode="HTML",
             reply_markup=keyboard,
         )
-
         await execute(
             """
             UPDATE file_purchases
@@ -2728,170 +2288,270 @@ async def send_manual_payment(
             msg.chat.id,
             purchase["id"],
         )
-
     except Exception:
-
         logger.exception(
             "SEND MANUAL PAYMENT ERROR"
         )
-
         return await call.message.answer(
             "❌ Gagal mengirim QR manual."
         )
-
-
+# ============================================================
+# CLAIM PURCHASE PAID
+# ============================================================
+async def claim_purchase_paid(
+    purchase_id: int,
+    user_id: int,
+    file_code: str,
+    allowed_statuses: tuple = (
+        "pending",
+        "verifying",
+    ),
+):
+    purchase_id = int(
+        purchase_id
+    )
+    user_id = int(
+        user_id
+    )
+    file_code = str(
+        file_code
+    ).strip()
+    if not purchase_id:
+        return None
+    placeholders = ",".join(
+        f"'{status}'"
+        for status in allowed_statuses
+    )
+    query = f"""
+        UPDATE file_purchases
+        SET
+            status='paid',
+            paid_at=COALESCE(
+                paid_at,
+                NOW()
+            )
+        WHERE id=$1
+          AND user_id=$2
+          AND file_code=$3
+          AND status IN ({placeholders})
+          AND NOT EXISTS (
+              SELECT 1
+              FROM file_purchases p2
+              WHERE p2.user_id=$2
+                AND p2.file_code=$3
+                AND p2.status='paid'
+                AND p2.id<>$1
+          )
+        RETURNING *
+    """
+    try:
+        updated = await fetchrow(
+            query,
+            purchase_id,
+            user_id,
+            file_code,
+        )
+        if updated:
+            return updated
+        logger.info(
+            (
+                "PAYMENT CLAIM LOST "
+                "| purchase=%s | user=%s | code=%s"
+            ),
+            purchase_id,
+            user_id,
+            file_code,
+        )
+        return None
+    except Exception as exc:
+        error_text = str(
+            exc
+        ).lower()
+        if (
+            "uq_file_purchases_one_paid"
+            in error_text
+        ) or (
+            "duplicate key"
+            in error_text
+        ):
+            logger.warning(
+                (
+                    "PAYMENT ALREADY WON "
+                    "| purchase=%s"
+                ),
+                purchase_id,
+            )
+            return None
+        logger.exception(
+            "CLAIM PAYMENT ERROR"
+        )
+        raise
+# ============================================================
+# CANCEL OTHER PAYMENT ATTEMPTS
+# ============================================================
+async def cancel_other_active_payments(
+    user_id: int,
+    file_code: str,
+    winner_id: int,
+):
+    try:
+        await execute(
+            """
+            UPDATE file_purchases
+            SET status='cancelled'
+            WHERE user_id=$1
+              AND file_code=$2
+              AND id<>$3
+              AND status IN (
+                  'pending',
+                  'verifying'
+              )
+            """,
+            int(user_id),
+            str(file_code).strip(),
+            int(winner_id),
+        )
+    except Exception:
+        logger.exception(
+            (
+                "CANCEL OTHER PAYMENTS ERROR "
+                "| winner=%s"
+            ),
+            winner_id,
+        )
 # ============================================================
 # CASHI PAYMENT CHECK
 # ============================================================
-
 @router.callback_query(
     F.data.startswith("paymentcheck:")
 )
 async def check_cashi_payment(
     call: CallbackQuery,
 ):
-
     await call.answer(
         "🔄 Mengecek pembayaran..."
     )
-
     try:
-
         token = call.data.split(
             ":",
             1,
         )[1].strip()
-
     except (
         AttributeError,
         IndexError,
     ):
-
         return await call.message.answer(
             "❌ Permintaan tidak valid."
         )
-
     data = await get_callback_token(
         "paymentcheck",
         token,
     )
-
     if not data:
-
         return await call.message.answer(
             "❌ Tombol pembayaran sudah expired."
         )
-
     code = str(
         data.get("code")
         or ""
     ).strip()
-
-    payment_id = str(
-        data.get("payment_id")
-        or ""
-    ).strip()
-
-    if not code or not payment_id:
-
+    purchase_id = safe_int(
+        data.get("purchase_id")
+    )
+    if not code or purchase_id <= 0:
         return await call.message.answer(
             "❌ Data pembayaran tidak valid."
         )
-
     user_id = int(
         call.from_user.id
     )
-
     lock_key = (
         f"cashi-check:"
         f"{user_id}:"
-        f"{payment_id}"
+        f"{purchase_id}"
     )
-
     try:
-
         if await safe_get(
             lock_key
         ):
-
             return await call.message.answer(
                 "⏳ Pembayaran sedang dicek..."
             )
-
         await safe_set(
             lock_key,
             True,
             ex=CHECK_LOCK,
         )
-
     except Exception:
-
         logger.warning(
             "CASHI CHECK LOCK ERROR",
             exc_info=True,
         )
-
-    # --------------------------------------------------------
-    # EXACT PURCHASE
-    # --------------------------------------------------------
-
     purchase = await fetchrow(
         """
         SELECT *
         FROM file_purchases
-        WHERE user_id=$1
-          AND file_code=$2
-          AND payment_id=$3
+        WHERE id=$1
+          AND user_id=$2
+          AND file_code=$3
         LIMIT 1
         """,
+        purchase_id,
         user_id,
         code,
-        payment_id,
     )
-
     if not purchase:
-
         return await call.message.answer(
             "❌ Transaksi tidak ditemukan."
         )
-
+    method = purchase_method(
+        purchase
+    )
+    if method != "cashi":
+        return await call.message.answer(
+            "❌ Ini bukan transaksi Cashi."
+        )
     current_status = normalize_status(
         purchase.get("status")
     )
-
     if current_status == "paid":
-
         return await call.message.answer(
             "✅ Pembayaran ini sudah berhasil diproses."
         )
-
-    if current_status != "pending":
-
+    if current_status not in {
+        "pending",
+        "verifying",
+    }:
         return await call.message.answer(
             (
                 "ℹ️ Transaksi sudah tidak berada "
                 "dalam status pembayaran aktif."
             )
         )
-
-    if not payment_id.startswith(
-        "CASHI-"
-    ):
-
-        return await call.message.answer(
-            "❌ Ini bukan transaksi Cashi."
+    gateway_order_id = str(
+        purchase.get(
+            "gateway_order_id"
         )
-
-    # --------------------------------------------------------
-    # CHECK CASHI
-    # --------------------------------------------------------
-
+        or ""
+    ).strip()
+    # Compatibility transaksi lama.
+    if not gateway_order_id:
+        old_payment_id = str(
+            purchase.get(
+                "payment_id"
+            )
+            or ""
+        ).strip()
+        if old_payment_id:
+            gateway_order_id = old_payment_id
+    if not gateway_order_id:
+        return await call.message.answer(
+            "❌ Gateway order ID tidak ditemukan."
+        )
     status_data = await cashi_check_status(
-        payment_id
+        gateway_order_id
     )
-
     if not status_data:
-
         return await call.message.answer(
             (
                 "⚠️ <b>Cashi belum dapat dihubungi.</b>\n\n"
@@ -2900,69 +2560,48 @@ async def check_cashi_payment(
             ),
             parse_mode="HTML",
         )
-
     status = extract_cashi_status(
         status_data
     )
-
     logger.info(
         (
-            "CASHI STATUS PARSED | "
-            "purchase=%s | payment=%s | status=%s"
+            "CASHI STATUS PARSED "
+            "| purchase=%s | gateway=%s "
+            "| status=%s"
         ),
         purchase["id"],
-        payment_id,
+        gateway_order_id,
         status,
     )
-
-    # --------------------------------------------------------
-    # SUCCESS
-    # --------------------------------------------------------
-
     if status in SUCCESS_STATUSES:
-
         file = await get_file_by_code(
             code
         )
-
         if not file:
-
             return await call.message.answer(
                 "❌ File transaksi tidak ditemukan."
             )
-
         return await process_existing_success(
             call,
             purchase,
             file,
         )
-
-    # --------------------------------------------------------
-    # FAILED
-    # --------------------------------------------------------
-
     if status in FAILED_STATUSES:
-
         changed = await fetchrow(
             """
             UPDATE file_purchases
             SET status=$1
             WHERE id=$2
-              AND status='pending'
-              AND payment_id=$3
+              AND status IN ('pending','verifying')
             RETURNING *
             """,
             status,
-            purchase["id"],
-            payment_id,
+            purchase_id,
         )
-
         if not changed:
-
             return await call.message.answer(
                 "⚠️ Transaksi sudah diproses."
             )
-
         return await call.message.answer(
             (
                 "❌ <b>Pembayaran tidak berhasil.</b>\n\n"
@@ -2975,11 +2614,6 @@ async def check_cashi_payment(
                 code
             ),
         )
-
-    # --------------------------------------------------------
-    # STILL PENDING
-    # --------------------------------------------------------
-
     return await call.message.answer(
         (
             "⏳ <b>Pembayaran belum terkonfirmasi.</b>\n\n"
@@ -2990,54 +2624,29 @@ async def check_cashi_payment(
         ),
         parse_mode="HTML",
     )
-
-
 # ============================================================
-# PROCESS CASHI SUCCESS
+# PROCESS SUCCESS
 # ============================================================
-
 async def process_existing_success(
     call: CallbackQuery,
     purchase,
     file,
 ):
-
     user_id = safe_int(
         purchase.get("user_id")
     )
-
-    try:
-
-        user_message = await call.bot.send_message(
-            user_id,
-            (
-                "⏳ <b>Pembayaran berhasil terdeteksi.</b>\n\n"
-                "Sedang memproses file..."
-            ),
-            parse_mode="HTML",
-        )
-
-    except Exception:
-
-        logger.exception(
-            "SEND SUCCESS MESSAGE ERROR"
-        )
-
-        return False
-
+    # Jangan kirim "berhasil" sebelum transaksi benar-benar
+    # memenangkan claim paid.
     return await finish_payment(
         call.bot,
         purchase,
         file,
         purchase.get("payment_id"),
-        user_message,
+        call.message,
     )
-
-
 # ============================================================
-# COMMON PAYMENT SUCCESS SIDE EFFECTS
+# COMMON SUCCESS SIDE EFFECTS
 # ============================================================
-
 async def complete_success_side_effects(
     bot,
     purchase,
@@ -3046,26 +2655,22 @@ async def complete_success_side_effects(
     message,
     media_list,
 ):
-
     purchase_id = safe_int(
         purchase.get("id")
     )
-
     user_id = safe_int(
         purchase.get("user_id")
     )
-
     code = str(
         file.get("code")
         or ""
     ).strip()
-
     # ========================================================
     # MEDIA SESSION
     # ========================================================
-
-    media_id = secrets.token_hex(16)
-
+    media_id = secrets.token_hex(
+        16
+    )
     session_data = {
         "user_id": user_id,
         "media": media_list,
@@ -3078,39 +2683,31 @@ async def complete_success_side_effects(
         "invoice": invoice,
         "purchase_id": purchase_id,
     }
-
     try:
-
         await safe_set(
             f"paidmedia:{media_id}",
             session_data,
             ex=MEDIA_TTL,
         )
-
         await execute(
             """
             UPDATE file_purchases
             SET media_session_id=$1
             WHERE id=$2
+              AND status='paid'
             """,
             media_id,
             purchase_id,
         )
-
     except Exception:
-
         logger.exception(
             "MEDIA SESSION CREATE ERROR"
         )
-
         return False
-
     # ========================================================
     # BUY COUNT
     # ========================================================
-
     try:
-
         await execute(
             """
             UPDATE files
@@ -3119,29 +2716,22 @@ async def complete_success_side_effects(
                     buy_count,
                     0
                 ) + 1,
-
                 sold=COALESCE(
                     sold,
                     0
                 ) + 1
-
             WHERE code=$1
             """,
             code,
         )
-
     except Exception:
-
         logger.exception(
             "BUY COUNT UPDATE ERROR"
         )
-
     # ========================================================
     # FREE CODE PROGRESS
     # ========================================================
-
     try:
-
         completed_rows = await fetch(
             """
             UPDATE free_code_progress
@@ -3153,7 +2743,6 @@ async def complete_success_side_effects(
                         0
                     ) + 1
                 ),
-
                 completed=(
                     LEAST(
                         3,
@@ -3163,7 +2752,6 @@ async def complete_success_side_effects(
                         ) + 1
                     ) >= 3
                 ),
-
                 completed_at=CASE
                     WHEN LEAST(
                         3,
@@ -3178,11 +2766,9 @@ async def complete_success_side_effects(
                     )
                     ELSE completed_at
                 END
-
             WHERE code=$1
               AND user_id=$2
               AND completed=FALSE
-
             RETURNING
                 user_id,
                 purchase_count,
@@ -3191,13 +2777,9 @@ async def complete_success_side_effects(
             code,
             user_id,
         )
-
         for row in completed_rows:
-
             if row["completed"]:
-
                 try:
-
                     await bot.send_message(
                         row["user_id"],
                         (
@@ -3209,39 +2791,28 @@ async def complete_success_side_effects(
                         ),
                         parse_mode="HTML",
                     )
-
                 except Exception:
-
                     logger.exception(
                         "FREE PROGRESS NOTIFY ERROR"
                     )
-
     except Exception:
-
         logger.exception(
             "FREE CODE PROGRESS ERROR"
         )
-
     # ========================================================
     # SELLER PROFIT
     # ========================================================
-
     try:
-
         price = safe_int(
             file.get("price")
         )
-
         income = int(
             price * 0.5
         )
-
         owner_id = file.get(
             "owner_id"
         )
-
         if owner_id and income > 0:
-
             await execute(
                 """
                 UPDATE users
@@ -3250,18 +2821,15 @@ async def complete_success_side_effects(
                         balance,
                         0
                     ) + $1,
-
                     total_earn=COALESCE(
                         total_earn,
                         0
                     ) + $1
-
                 WHERE chat_id=$2
                 """,
                 income,
                 owner_id,
             )
-
             await execute(
                 """
                 INSERT INTO transactions
@@ -3279,30 +2847,22 @@ async def complete_success_side_effects(
                 income,
                 f"Pendapatan file {code}",
             )
-
     except Exception:
-
         logger.exception(
             "SELLER PROFIT ERROR"
         )
-
     # ========================================================
     # NOTIFICATION CHANNEL
     # ========================================================
-
     try:
-
         if NOTIF_CHANNEL_ID:
-
             masked = mask_user_id(
                 user_id
             )
-
             buy_url = (
                 "https://t.me/mktplbot"
                 f"?start={code}"
             )
-
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
@@ -3313,20 +2873,13 @@ async def complete_success_side_effects(
                     ]
                 ]
             )
-
             payment_name = (
                 "CASHI"
-                if str(
-                    purchase.get(
-                        "payment_id",
-                        "",
-                    )
-                ).startswith(
-                    "CASHI-"
-                )
+                if purchase_method(
+                    purchase
+                ) == "cashi"
                 else "MANUAL"
             )
-
             await bot.send_message(
                 NOTIF_CHANNEL_ID,
                 (
@@ -3344,59 +2897,42 @@ async def complete_success_side_effects(
                 parse_mode="HTML",
                 reply_markup=keyboard,
             )
-
     except Exception:
-
         logger.exception(
             "PAYMENT NOTIFICATION ERROR"
         )
-
     # ========================================================
     # DELETE PAYMENT QR
     # ========================================================
-
     await delete_payment_message(
         bot,
         purchase,
     )
-
     # ========================================================
-    # MEDIA MENU
+    # USER SUCCESS MESSAGE
     # ========================================================
-
-    total = len(
-        media_list
-    )
-
     try:
-
         await message.answer(
             (
                 "🎉 <b>Pembayaran berhasil!</b>\n\n"
-                f"📦 Total File: <b>{total}</b>\n\n"
+                f"📦 Total File: <b>{len(media_list)}</b>\n\n"
                 "Silakan pilih pengiriman:"
             ),
             parse_mode="HTML",
             reply_markup=media_keyboard(
                 media_id,
                 1,
-                total,
+                len(media_list),
             ),
         )
-
     except Exception:
-
         logger.exception(
             "SEND MEDIA MENU ERROR"
         )
-
     return True
-
-
 # ============================================================
 # FINISH CASHI PAYMENT
 # ============================================================
-
 async def finish_payment(
     bot,
     purchase,
@@ -3404,59 +2940,76 @@ async def finish_payment(
     invoice,
     message,
 ):
-
     purchase_id = safe_int(
         purchase.get("id")
     )
-
-    if purchase_id <= 0:
+    user_id = safe_int(
+        purchase.get("user_id")
+    )
+    code = str(
+        file.get("code")
+        or purchase.get("file_code")
+        or ""
+    ).strip()
+    if (
+        purchase_id <= 0
+        or user_id <= 0
+        or not code
+    ):
         return False
-
     try:
-
         media_list = parse_media(
             file.get("media")
         )
-
         if not media_list:
-
             await message.answer(
                 "❌ Media file kosong."
             )
-
             return False
-
-        # ====================================================
-        # ATOMIC pending -> paid
-        # ====================================================
-
-        updated = await fetchrow(
-            """
-            UPDATE file_purchases
-            SET
-                status='paid',
-                paid_at=COALESCE(
-                    paid_at,
-                    NOW()
+        # ----------------------------------------------------
+        # CLAIM PAYMENT
+        # ----------------------------------------------------
+        updated = await claim_purchase_paid(
+            purchase_id,
+            user_id,
+            code,
+            allowed_statuses=(
+                "pending",
+                "verifying",
+            ),
+        )
+        if not updated:
+            paid = await get_paid_purchase(
+                user_id,
+                code,
+            )
+            if paid:
+                return await message.answer(
+                    "✅ Pembayaran sudah diproses sebelumnya."
                 )
-            WHERE id=$1
-              AND status='pending'
-            RETURNING *
-            """,
+            return False
+        purchase = updated
+        # ----------------------------------------------------
+        # CANCEL OTHER PAYMENT METHODS
+        # ----------------------------------------------------
+        await cancel_other_active_payments(
+            user_id,
+            code,
             purchase_id,
         )
-
-        if not updated:
-
-            logger.info(
-                "PAYMENT ALREADY PROCESSED | purchase=%s",
-                purchase_id,
+        # ----------------------------------------------------
+        # SUCCESS MESSAGE
+        # ----------------------------------------------------
+        try:
+            await message.answer(
+                (
+                    "⏳ <b>Pembayaran berhasil terdeteksi.</b>\n\n"
+                    "Sedang memproses file..."
+                ),
+                parse_mode="HTML",
             )
-
-            return False
-
-        purchase = updated
-
+        except Exception:
+            pass
         return await complete_success_side_effects(
             bot,
             purchase,
@@ -3465,144 +3018,114 @@ async def finish_payment(
             message,
             media_list,
         )
-
     except Exception:
-
         logger.exception(
-            "FINISH PAYMENT ERROR | purchase=%s",
+            (
+                "FINISH PAYMENT ERROR "
+                "| purchase=%s"
+            ),
             purchase_id,
         )
-
         return False
-
-
 # ============================================================
 # MANUAL PAYMENT CHECK
 # ============================================================
-
 @router.callback_query(
     F.data.startswith("manualcheck:")
 )
 async def manual_check(
     call: CallbackQuery,
 ):
-
     await call.answer(
         "⏳ Mengirim permintaan verifikasi..."
     )
-
     try:
-
         token = call.data.split(
             ":",
             1,
         )[1].strip()
-
     except (
         AttributeError,
         IndexError,
     ):
-
         return await call.message.answer(
             "❌ Permintaan tidak valid."
         )
-
     callback_data = await get_callback_token(
         "manualcheck",
         token,
     )
-
     if not callback_data:
-
         return await call.message.answer(
             "❌ Tombol sudah expired."
         )
-
     code = str(
         callback_data.get("code")
         or ""
     ).strip()
-
     user_id = int(
         call.from_user.id
     )
-
-    purchase = await get_active_purchase(
+    purchase = await get_active_method_purchase(
         user_id,
         code,
+        "MANUAL-",
     )
-
     if not purchase:
-
         paid = await get_paid_purchase(
             user_id,
             code,
         )
-
         if paid:
-
             return await call.message.answer(
                 "✅ Pembayaran sudah diverifikasi."
             )
-
         return await call.message.answer(
-            "❌ Transaksi tidak ditemukan."
+            "❌ Transaksi manual tidak ditemukan."
         )
-
     payment_id = str(
         purchase.get("payment_id")
         or ""
     ).strip()
-
     if not payment_id.startswith(
         "MANUAL-"
     ):
-
         return await call.message.answer(
             "❌ Transaksi ini bukan pembayaran manual."
         )
-
     purchase_id = safe_int(
         purchase.get("id")
     )
-
     lock_key = (
         f"manualverify:{purchase_id}"
     )
-
     try:
-
         if await safe_get(
             lock_key
         ):
-
             return await call.message.answer(
-                "⏳ Permintaan verifikasi sudah dikirim ke admin."
+                (
+                    "⏳ Permintaan verifikasi sudah "
+                    "dikirim ke admin."
+                )
             )
-
         await safe_set(
             lock_key,
             True,
             ex=VERIFY_REQUEST_TTL,
         )
-
     except Exception:
-
         logger.warning(
             "MANUAL VERIFY LOCK ERROR",
             exc_info=True,
         )
-
     file = await get_file_by_code(
         code
     )
-
     if not file:
-
         return await call.message.answer(
             "❌ File tidak ditemukan."
         )
-
     text = (
         "📥 <b>MANUAL PAYMENT CHECK</b>\n\n"
         f"👤 User: <code>{user_id}</code>\n"
@@ -3614,7 +3137,6 @@ async def manual_check(
         f"💳 Payment: "
         f"<code>{clean_html(payment_id)}</code>"
     )
-
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -3633,35 +3155,31 @@ async def manual_check(
             ]
         ]
     )
-
     sent = 0
-
     for admin_id in get_admin_ids():
-
         try:
-
             await call.bot.send_message(
                 admin_id,
                 text,
                 parse_mode="HTML",
                 reply_markup=keyboard,
             )
-
             sent += 1
-
         except Exception:
-
             logger.exception(
-                "SEND MANUAL ADMIN ERROR | admin=%s",
+                (
+                    "SEND MANUAL ADMIN ERROR "
+                    "| admin=%s"
+                ),
                 admin_id,
             )
-
     if sent == 0:
-
         return await call.message.answer(
-            "❌ Tidak ada admin yang dapat menerima permintaan."
+            (
+                "❌ Tidak ada admin yang dapat "
+                "menerima permintaan."
+            )
         )
-
     await call.message.answer(
         (
             "✅ <b>Permintaan verifikasi dikirim.</b>\n\n"
@@ -3669,12 +3187,9 @@ async def manual_check(
         ),
         parse_mode="HTML",
     )
-
-
 # ============================================================
 # APPROVE MANUAL
 # ============================================================
-
 @router.callback_query(
     F.data.startswith("approve:")
 )
@@ -3682,44 +3197,34 @@ async def approve_manual(
     call: CallbackQuery,
     state: FSMContext,
 ):
-
     if not is_admin(
         call.from_user.id
     ):
-
         return await call.answer(
             "❌ Kamu bukan admin.",
             show_alert=True,
         )
-
     await call.answer(
         "⏳ Memproses pembayaran..."
     )
-
     await state.clear()
-
     try:
-
         purchase_id = int(
             call.data.split(
                 ":",
                 1,
             )[1]
         )
-
     except (
         ValueError,
         IndexError,
     ):
-
         return await call.message.answer(
             "❌ ID transaksi tidak valid."
         )
-
     # --------------------------------------------------------
-    # ATOMIC CLAIM
+    # VERIFY MANUAL
     # --------------------------------------------------------
-
     purchase = await fetchrow(
         """
         UPDATE file_purchases
@@ -3731,39 +3236,38 @@ async def approve_manual(
         """,
         purchase_id,
     )
-
     if not purchase:
-
         current = await get_purchase_by_id(
             purchase_id
         )
-
         if current and current.get(
             "status"
         ) == "paid":
-
             return await call.message.answer(
                 "✅ Pembayaran sudah diproses admin lain."
             )
-
         if current and current.get(
             "status"
         ) == "rejected":
-
             return await call.message.answer(
                 "❌ Pembayaran sudah ditolak."
             )
-
+        if current and current.get(
+            "status"
+        ) == "cancelled":
+            return await call.message.answer(
+                (
+                    "ℹ️ Pembayaran ini dibatalkan karena "
+                    "metode pembayaran lain sudah berhasil."
+                )
+            )
         return await call.message.answer(
             "❌ Transaksi sudah diproses / tidak valid."
         )
-
     file = await get_file_by_code(
         purchase["file_code"]
     )
-
     if not file:
-
         await execute(
             """
             UPDATE file_purchases
@@ -3773,17 +3277,13 @@ async def approve_manual(
             """,
             purchase_id,
         )
-
         return await call.message.answer(
             "❌ File tidak ditemukan."
         )
-
     user_id = safe_int(
         purchase.get("user_id")
     )
-
     try:
-
         user_message = await call.bot.send_message(
             user_id,
             (
@@ -3792,9 +3292,7 @@ async def approve_manual(
             ),
             parse_mode="HTML",
         )
-
     except Exception:
-
         await execute(
             """
             UPDATE file_purchases
@@ -3804,11 +3302,9 @@ async def approve_manual(
             """,
             purchase_id,
         )
-
         return await call.message.answer(
             "❌ User tidak dapat dihubungi."
         )
-
     success = await finish_manual_payment(
         call.bot,
         purchase,
@@ -3816,15 +3312,23 @@ async def approve_manual(
         purchase.get("payment_id"),
         user_message,
     )
-
     if not success:
-
+        current = await get_purchase_by_id(
+            purchase_id
+        )
+        if current and current.get(
+            "status"
+        ) == "paid":
+            return await call.message.answer(
+                (
+                    "ℹ️ Pembayaran sudah dimenangkan "
+                    "oleh transaksi lain."
+                )
+            )
         return await call.message.answer(
             "❌ Pembayaran gagal diproses."
         )
-
     try:
-
         await call.message.edit_text(
             (
                 "✅ <b>PEMBAYARAN DISETUJUI</b>\n\n"
@@ -3841,19 +3345,14 @@ async def approve_manual(
             parse_mode="HTML",
             reply_markup=None,
         )
-
     except Exception:
-
         logger.warning(
             "EDIT APPROVE MESSAGE FAILED",
             exc_info=True,
         )
-
-
 # ============================================================
 # FINISH MANUAL PAYMENT
 # ============================================================
-
 async def finish_manual_payment(
     bot,
     purchase,
@@ -3861,22 +3360,28 @@ async def finish_manual_payment(
     invoice,
     message,
 ):
-
     purchase_id = safe_int(
         purchase.get("id")
     )
-
-    if purchase_id <= 0:
+    user_id = safe_int(
+        purchase.get("user_id")
+    )
+    code = str(
+        file.get("code")
+        or purchase.get("file_code")
+        or ""
+    ).strip()
+    if (
+        purchase_id <= 0
+        or user_id <= 0
+        or not code
+    ):
         return False
-
     try:
-
         media_list = parse_media(
             file.get("media")
         )
-
         if not media_list:
-
             await execute(
                 """
                 UPDATE file_purchases
@@ -3886,45 +3391,46 @@ async def finish_manual_payment(
                 """,
                 purchase_id,
             )
-
             await message.answer(
                 "❌ Media file kosong."
             )
-
             return False
-
         # ----------------------------------------------------
-        # ATOMIC verifying -> paid
+        # CLAIM
         # ----------------------------------------------------
-
-        updated = await fetchrow(
-            """
-            UPDATE file_purchases
-            SET
-                status='paid',
-                paid_at=COALESCE(
-                    paid_at,
-                    NOW()
-                )
-            WHERE id=$1
-              AND status='verifying'
-              AND payment_id LIKE 'MANUAL-%'
-            RETURNING *
-            """,
+        updated = await claim_purchase_paid(
             purchase_id,
+            user_id,
+            code,
+            allowed_statuses=(
+                "verifying",
+                "pending",
+            ),
         )
-
         if not updated:
-
+            paid = await get_paid_purchase(
+                user_id,
+                code,
+            )
+            if paid:
+                return False
             logger.warning(
-                "MANUAL PAYMENT CLAIM LOST | purchase=%s",
+                (
+                    "MANUAL PAYMENT CLAIM LOST "
+                    "| purchase=%s"
+                ),
                 purchase_id,
             )
-
             return False
-
         purchase = updated
-
+        # ----------------------------------------------------
+        # CANCEL CASHI / OTHER ACTIVE
+        # ----------------------------------------------------
+        await cancel_other_active_payments(
+            user_id,
+            code,
+            purchase_id,
+        )
         return await complete_success_side_effects(
             bot,
             purchase,
@@ -3933,21 +3439,18 @@ async def finish_manual_payment(
             message,
             media_list,
         )
-
     except Exception:
-
         logger.exception(
-            "FINISH MANUAL PAYMENT ERROR | purchase=%s",
+            (
+                "FINISH MANUAL PAYMENT ERROR "
+                "| purchase=%s"
+            ),
             purchase_id,
         )
-
         return False
-
-
 # ============================================================
 # REJECT
 # ============================================================
-
 @router.callback_query(
     F.data.startswith("reject:")
 )
@@ -3955,35 +3458,28 @@ async def reject_manual(
     call: CallbackQuery,
     state: FSMContext,
 ):
-
     if not is_admin(
         call.from_user.id
     ):
-
         return await call.answer(
             "❌ Kamu bukan admin.",
             show_alert=True,
         )
-
     try:
-
         purchase_id = int(
             call.data.split(
                 ":",
                 1,
             )[1]
         )
-
     except (
         ValueError,
         IndexError,
     ):
-
         return await call.answer(
             "❌ ID transaksi tidak valid.",
             show_alert=True,
         )
-
     purchase = await fetchrow(
         """
         SELECT *
@@ -3995,18 +3491,17 @@ async def reject_manual(
         """,
         purchase_id,
     )
-
     if not purchase:
-
         return await call.answer(
-            "❌ Transaksi tidak ditemukan atau sudah diproses.",
+            (
+                "❌ Transaksi tidak ditemukan "
+                "atau sudah diproses."
+            ),
             show_alert=True,
         )
-
     await state.set_state(
         RejectPaymentState.waiting_reason
     )
-
     await state.update_data(
         purchase_id=purchase_id,
         admin_id=int(
@@ -4019,26 +3514,22 @@ async def reject_manual(
             call.message.message_id
         ),
     )
-
     await call.message.reply(
         (
             "❌ <b>REJECT PEMBAYARAN</b>\n\n"
             f"🧾 ID: <code>{purchase_id}</code>\n"
             f"👤 User: <code>{purchase['user_id']}</code>\n"
-            f"📦 Code: <code>{clean_html(purchase['file_code'])}</code>\n\n"
+            f"📦 Code: "
+            f"<code>{clean_html(purchase['file_code'])}</code>\n\n"
             "📝 Kirim alasan penolakan.\n\n"
             "Ketik <code>/cancelreject</code> untuk membatalkan."
         ),
         parse_mode="HTML",
     )
-
     await call.answer()
-
-
 # ============================================================
 # CANCEL REJECT
 # ============================================================
-
 @router.message(
     RejectPaymentState.waiting_reason,
     F.text == "/cancelreject",
@@ -4047,20 +3538,15 @@ async def cancel_reject_reason(
     message: Message,
     state: FSMContext,
 ):
-
     if not is_admin(
         message.from_user.id
     ):
         return
-
     data = await state.get_data()
-
     purchase_id = data.get(
         "purchase_id"
     )
-
     await state.clear()
-
     await message.answer(
         (
             "↩️ <b>Reject dibatalkan.</b>\n\n"
@@ -4069,12 +3555,9 @@ async def cancel_reject_reason(
         ),
         parse_mode="HTML",
     )
-
-
 # ============================================================
 # RECEIVE REJECT
 # ============================================================
-
 @router.message(
     RejectPaymentState.waiting_reason,
     F.text,
@@ -4083,63 +3566,43 @@ async def receive_reject_reason(
     message: Message,
     state: FSMContext,
 ):
-
     if not is_admin(
         message.from_user.id
     ):
-
         return await message.answer(
             "❌ Kamu bukan admin."
         )
-
     data = await state.get_data()
-
     purchase_id = data.get(
         "purchase_id"
     )
-
     admin_id = data.get(
         "admin_id"
     )
-
     if (
         admin_id
         and int(message.from_user.id)
         != int(admin_id)
     ):
-
         return await message.answer(
             "❌ Permintaan ini milik admin lain."
         )
-
     if not purchase_id:
-
         await state.clear()
-
         return await message.answer(
             "❌ Data transaksi tidak ditemukan."
         )
-
     reason = str(
         message.text or ""
     ).strip()
-
     if not reason:
-
         return await message.answer(
             "❌ Alasan tidak boleh kosong."
         )
-
     if len(reason) > 1000:
-
         return await message.answer(
             "❌ Maksimal 1000 karakter."
         )
-
-    # --------------------------------------------------------
-    # ATOMIC REJECT
-    # --------------------------------------------------------
-
     rejected = await fetchrow(
         """
         UPDATE file_purchases
@@ -4151,36 +3614,26 @@ async def receive_reject_reason(
         """,
         purchase_id,
     )
-
     if not rejected:
-
         await state.clear()
-
         return await message.answer(
             "❌ Transaksi sudah diproses admin lain."
         )
-
     user_id = safe_int(
         rejected.get("user_id")
     )
-
     code = str(
         rejected.get("file_code")
         or ""
     )
-
     safe_reason = clean_html(
         reason
     )
-
     # --------------------------------------------------------
     # USER
     # --------------------------------------------------------
-
     user_notified = False
-
     try:
-
         await message.bot.send_message(
             user_id,
             (
@@ -4192,58 +3645,45 @@ async def receive_reject_reason(
             ),
             parse_mode="HTML",
         )
-
         user_notified = True
-
     except Exception:
-
         logger.exception(
             "REJECT USER NOTIFICATION ERROR"
         )
-
     # --------------------------------------------------------
     # DELETE QR
     # --------------------------------------------------------
-
     qr_deleted = False
-
     try:
-
         qr_message_id = rejected.get(
             "qr_message_id"
         )
-
         qr_chat_id = rejected.get(
             "qr_chat_id"
         )
-
         if qr_message_id and qr_chat_id:
-
             await message.bot.delete_message(
-                chat_id=int(qr_chat_id),
-                message_id=int(qr_message_id),
+                chat_id=int(
+                    qr_chat_id
+                ),
+                message_id=int(
+                    qr_message_id
+                ),
             )
-
             qr_deleted = True
-
     except Exception:
-
         logger.warning(
             "DELETE REJECT QR FAILED",
             exc_info=True,
         )
-
     # --------------------------------------------------------
     # ADMIN MESSAGE
     # --------------------------------------------------------
-
     if (
         data.get("admin_chat_id")
         and data.get("admin_message_id")
     ):
-
         try:
-
             await message.bot.edit_message_text(
                 chat_id=int(
                     data["admin_chat_id"]
@@ -4255,27 +3695,26 @@ async def receive_reject_reason(
                     "❌ <b>PEMBAYARAN DITOLAK</b>\n\n"
                     f"🧾 ID: <code>{purchase_id}</code>\n"
                     f"👤 User: <code>{user_id}</code>\n"
-                    f"📦 Code: <code>{clean_html(code)}</code>\n\n"
+                    f"📦 Code: "
+                    f"<code>{clean_html(code)}</code>\n\n"
                     "📝 <b>Alasan:</b>\n"
                     f"{safe_reason}"
                 ),
                 parse_mode="HTML",
                 reply_markup=None,
             )
-
         except Exception:
-
             logger.warning(
                 "EDIT REJECT ADMIN MESSAGE ERROR",
                 exc_info=True,
             )
-
     await message.answer(
         (
             "❌ <b>PEMBAYARAN DITOLAK</b>\n\n"
             f"🧾 ID: <code>{purchase_id}</code>\n"
             f"👤 User: <code>{user_id}</code>\n"
-            f"📦 Code: <code>{clean_html(code)}</code>\n\n"
+            f"📦 Code: "
+            f"<code>{clean_html(code)}</code>\n\n"
             f"📝 Alasan:\n{safe_reason}\n\n"
             f"👤 Notifikasi user: "
             f"{'✅' if user_notified else '❌'}\n"
@@ -4284,14 +3723,10 @@ async def receive_reject_reason(
         ),
         parse_mode="HTML",
     )
-
     await state.clear()
-
-
 # ============================================================
 # CLOSE
 # ============================================================
-
 @router.callback_query(
     F.data == "close"
 )
@@ -4299,120 +3734,84 @@ async def close_payment(
     call: CallbackQuery,
     state: FSMContext,
 ):
-
     await state.clear()
-
     try:
-
         await call.message.delete()
-
     except Exception:
         pass
-
     await call.answer(
         "Ditutup."
     )
-
-
 # ============================================================
 # MEDIA SECURITY
 # ============================================================
-
 async def get_owned_media_session(
     call: CallbackQuery,
     media_id: str,
 ):
-
     if not media_id:
-
         await call.answer(
             "❌ Session tidak valid.",
             show_alert=True,
         )
-
         return None
-
     data = await safe_get(
         f"paidmedia:{media_id}"
     )
-
     if not data:
-
         await call.answer(
             "❌ Session media sudah expired.",
             show_alert=True,
         )
-
         return None
-
     if isinstance(
         data,
         str,
     ):
-
         try:
-
             data = json.loads(
                 data
             )
-
         except Exception:
-
             await call.answer(
                 "❌ Data session tidak valid.",
                 show_alert=True,
             )
-
             return None
-
     if not isinstance(
         data,
         dict,
     ):
-
         await call.answer(
             "❌ Data session tidak valid.",
             show_alert=True,
         )
-
         return None
-
     session_user_id = data.get(
         "user_id"
     )
-
     try:
-
         if int(
             session_user_id
         ) != int(
             call.from_user.id
         ):
-
             raise ValueError
-
     except Exception:
-
         await call.answer(
             "❌ Akses media tidak diizinkan.",
             show_alert=True,
         )
-
         return None
-
     return data
-
-
 # ============================================================
 # MEDIA KEYBOARD
 # ============================================================
-
 def media_keyboard(
     media_id: str,
     page: int,
     total: int,
 ):
-
     max_page = max(
         1,
         (
@@ -4422,7 +3821,6 @@ def media_keyboard(
         )
         // PER_PAGE,
     )
-
     page = max(
         1,
         min(
@@ -4430,13 +3828,9 @@ def media_keyboard(
             max_page,
         ),
     )
-
     buttons = []
-
     nav = []
-
     if page > 1:
-
         nav.append(
             InlineKeyboardButton(
                 text="⬅️",
@@ -4445,16 +3839,13 @@ def media_keyboard(
                 ),
             )
         )
-
     nav.append(
         InlineKeyboardButton(
             text=f"{page}/{max_page}",
             callback_data="none",
         )
     )
-
     if page < max_page:
-
         nav.append(
             InlineKeyboardButton(
                 text="➡️",
@@ -4463,11 +3854,9 @@ def media_keyboard(
                 ),
             )
         )
-
     buttons.append(
         nav
     )
-
     buttons.append(
         [
             InlineKeyboardButton(
@@ -4478,7 +3867,6 @@ def media_keyboard(
             )
         ]
     )
-
     buttons.append(
         [
             InlineKeyboardButton(
@@ -4489,70 +3877,52 @@ def media_keyboard(
             )
         ]
     )
-
     return InlineKeyboardMarkup(
         inline_keyboard=buttons
     )
-
-
 # ============================================================
 # SEND PAGE
 # ============================================================
-
 @router.callback_query(
     F.data.startswith("sp:")
 )
 async def send_page_media(
     call: CallbackQuery,
 ):
-
     try:
-
         parts = call.data.split(":")
-
         if len(parts) != 3:
             raise ValueError
-
         _, media_id, page_raw = parts
-
         page = int(
             page_raw
         )
-
     except Exception:
-
         return await call.answer(
             "❌ Data halaman tidak valid.",
             show_alert=True,
         )
-
     data = await get_owned_media_session(
         call,
         media_id,
     )
-
     if not data:
         return
-
     media_list = data.get(
         "media",
         [],
     )
-
     if not isinstance(
         media_list,
         list,
     ):
-
         return await call.answer(
             "❌ Data media tidak valid.",
             show_alert=True,
         )
-
     total = len(
         media_list
     )
-
     max_page = max(
         1,
         (
@@ -4562,46 +3932,33 @@ async def send_page_media(
         )
         // PER_PAGE,
     )
-
     if page < 1 or page > max_page:
-
         return await call.answer(
             "❌ Halaman tidak valid.",
             show_alert=True,
         )
-
     start = (
         page - 1
     ) * PER_PAGE
-
     items = media_list[
         start:start + PER_PAGE
     ]
-
     if not items:
-
         return await call.answer(
             "❌ Halaman kosong.",
             show_alert=True,
         )
-
     await call.answer(
         "📤 Mengirim file..."
     )
-
     sent = 0
-
     for item in items:
-
         try:
-
             message_id = item.get(
                 "message_id"
             )
-
             if not message_id:
                 continue
-
             await call.bot.copy_message(
                 chat_id=call.from_user.id,
                 from_chat_id=STORAGE_CHANNEL_ID,
@@ -4609,16 +3966,15 @@ async def send_page_media(
                     message_id
                 ),
             )
-
             sent += 1
-
         except Exception:
-
             logger.exception(
-                "SEND PAGE ERROR | message=%s",
+                (
+                    "SEND PAGE ERROR "
+                    "| message=%s"
+                ),
                 item.get("message_id"),
             )
-
     await call.message.answer(
         (
             f"✅ Halaman {page} selesai\n\n"
@@ -4626,83 +3982,60 @@ async def send_page_media(
             f"{sent}/{len(items)} file"
         )
     )
-
-
 # ============================================================
 # SEND ALL
 # ============================================================
-
 @router.callback_query(
     F.data.startswith("sa:")
 )
 async def send_all_media(
     call: CallbackQuery,
 ):
-
     try:
-
         parts = call.data.split(":")
-
         if len(parts) != 2:
             raise ValueError
-
         _, media_id = parts
-
     except Exception:
-
         return await call.answer(
             "❌ Session tidak valid.",
             show_alert=True,
         )
-
     data = await get_owned_media_session(
         call,
         media_id,
     )
-
     if not data:
         return
-
     media_list = data.get(
         "media",
         [],
     )
-
     if not media_list:
-
         return await call.answer(
             "❌ Media kosong.",
             show_alert=True,
         )
-
     await call.answer(
         "📦 Mengirim semua file..."
     )
-
     total = len(
         media_list
     )
-
     progress = await call.message.answer(
         f"⏳ Mengirim 0/{total}"
     )
-
     sent = 0
-
     for index, item in enumerate(
         media_list,
         start=1,
     ):
-
         try:
-
             message_id = item.get(
                 "message_id"
             )
-
             if not message_id:
                 continue
-
             await call.bot.copy_message(
                 chat_id=call.from_user.id,
                 from_chat_id=STORAGE_CHANNEL_ID,
@@ -4710,32 +4043,26 @@ async def send_all_media(
                     message_id
                 ),
             )
-
             sent += 1
-
             if (
                 index % 5 == 0
                 or index == total
             ):
-
                 try:
-
                     await progress.edit_text(
                         f"⏳ Mengirim {index}/{total}"
                     )
-
                 except Exception:
                     pass
-
         except Exception:
-
             logger.exception(
-                "SEND ALL ERROR | message=%s",
+                (
+                    "SEND ALL ERROR "
+                    "| message=%s"
+                ),
                 item.get("message_id"),
             )
-
     try:
-
         await progress.edit_text(
             (
                 "✅ Semua file selesai\n\n"
@@ -4743,66 +4070,48 @@ async def send_all_media(
                 f"{sent}/{total}"
             )
         )
-
     except Exception:
         pass
-
-
 # ============================================================
 # MEDIA NAVIGATION
 # ============================================================
-
 @router.callback_query(
     F.data.startswith("mp:")
 )
 async def media_page(
     call: CallbackQuery,
 ):
-
     try:
-
         parts = call.data.split(":")
-
         if len(parts) != 3:
             raise ValueError
-
         _, media_id, page_raw = parts
-
         page = int(
             page_raw
         )
-
     except Exception:
-
         return await call.answer(
             "❌ Data halaman tidak valid.",
             show_alert=True,
         )
-
     data = await get_owned_media_session(
         call,
         media_id,
     )
-
     if not data:
         return
-
     media_list = data.get(
         "media",
         [],
     )
-
     if not media_list:
-
         return await call.answer(
             "❌ Media tidak ditemukan.",
             show_alert=True,
         )
-
     total = len(
         media_list
     )
-
     max_page = max(
         1,
         (
@@ -4812,16 +4121,12 @@ async def media_page(
         )
         // PER_PAGE,
     )
-
     if page < 1 or page > max_page:
-
         return await call.answer(
             "❌ Halaman tidak valid.",
             show_alert=True,
         )
-
     try:
-
         await call.message.edit_reply_markup(
             reply_markup=media_keyboard(
                 media_id,
@@ -4829,26 +4134,19 @@ async def media_page(
                 total,
             )
         )
-
     except Exception:
-
         logger.warning(
             "MEDIA PAGINATION ERROR",
             exc_info=True,
         )
-
     await call.answer()
-
-
 # ============================================================
 # NONE CALLBACK
 # ============================================================
-
 @router.callback_query(
     F.data == "none"
 )
 async def none_callback(
     call: CallbackQuery,
 ):
-
     await call.answer()
