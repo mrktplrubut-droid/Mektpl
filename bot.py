@@ -66,6 +66,7 @@ dp.callback_query.middleware(
 # ROUTERS IMPORT
 # ============================================================
 # BASIC
+from handlers.get_file_id import router as get_file_id_router
 from handlers.start import router as start_router
 from handlers.check_sub import router as check_sub_router
 from handlers.page import router as page_router
@@ -127,6 +128,7 @@ from handlers.notify import router as notify_router
 # ------------------------------------------------------------
 # BASIC
 # ------------------------------------------------------------
+dp.include_router(get_file_id_router)
 dp.include_router(start_router)
 dp.include_router(check_sub_router)
 dp.include_router(menu_router)
