@@ -457,6 +457,11 @@ async def init_db():
         ALTER TABLE file_purchases
         ADD COLUMN IF NOT EXISTS paid_at TIMESTAMP;
         """)
+        
+        await conn.execute("""
+        ALTER TABLE file_purchases
+        ADD COLUMN IF NOT EXISTS media_session_id TEXT;
+        """)
 
         # ========================
         # FILES / MARKETPLACE CORE

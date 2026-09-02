@@ -247,6 +247,7 @@ ALTER TABLE file_purchases ADD COLUMN IF NOT EXISTS qr_message_id BIGINT;
 ALTER TABLE file_purchases ADD COLUMN IF NOT EXISTS qr_chat_id BIGINT;
 ALTER TABLE file_purchases ADD COLUMN IF NOT EXISTS paid_at TIMESTAMP;
 ALTER TABLE file_purchases ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
+ALTER TABLE file_purchases ADD COLUMN IF NOT EXISTS media_session_id TEXT;
 CREATE INDEX IF NOT EXISTS idx_file_purchases_user ON file_purchases(user_id);
 CREATE INDEX IF NOT EXISTS idx_file_purchases_code ON file_purchases(file_code);
 CREATE INDEX IF NOT EXISTS idx_file_purchases_status ON file_purchases(status);

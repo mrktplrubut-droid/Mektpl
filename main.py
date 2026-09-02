@@ -15,6 +15,7 @@ from tasks.auto_delete import auto_delete_worker
 from tasks.payment_worker import payment_worker
 from tasks.vip_expired import vip_expired_worker
 from handlers.bayargg import router as bayargg_webhook_router
+from handlers.cashi_webhook import router as cashi_webhook_router
 
 
 os.environ["TZ"] = TIMEZONE
@@ -118,6 +119,7 @@ app = FastAPI(
 
 # BayarGG callback for automatic VIP/VVIP and file payments.
 app.include_router(bayargg_webhook_router)
+app.include_router(cashi_webhook_router)
 
 
 @app.get("/")
