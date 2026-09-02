@@ -26,17 +26,34 @@ from utils.user import get_user_status
 
 router = Router()
 
-logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
+
+# ============================================================
+# CONFIG
+# ============================================================
 
 UPDATE_DELAY = 0.5
 
+CODE_MIN_LENGTH = 30
+CODE_MAX_LENGTH = 60
+
+
+# ============================================================
+# USER LOCK
+# ============================================================
 
 _last_update: Dict[int, float] = {}
 _user_locks: Dict[int, asyncio.Lock] = {}
 
 
-def get_lock(user_id: int):
+def get_lock(user_id: int) -> asyncio.Lock:
+    """
+    Satu user tidak boleh menjalankan beberapa proses Get File
+    secara bersamaan.
+    """
+
+    user_id = int(user_id)
 
     if user_id not in _user_locks:
         _user_locks[user_id] = asyncio.Lock()
@@ -46,79 +63,232 @@ def get_lock(user_id: int):
 
 @asynccontextmanager
 async def user_lock(user_id: int):
-
     async with get_lock(user_id):
         yield
 
 
-class GetFileState(StatesGroup):
+# ============================================================
+# FSM
+# ============================================================
 
+class GetFileState(StatesGroup):
     waiting_code = State()
 
 
+# ============================================================
+# CALLBACK SAFE ANSWER
+# ============================================================
+
+async def safe_callback_answer(
+    call: CallbackQuery,
+    text: str | None = None,
+    show_alert: bool = False,
+):
+    """
+    Menjawab callback Telegram dengan aman.
+
+    CallbackQuery mempunyai batas waktu. Kalau handler terlalu
+    lama dan callback sudah expired, Telegram mengembalikan:
+
+    TelegramBadRequest:
+    query is too old and response timeout expired
+
+    Error ini tidak boleh membuat bot crash.
+    """
+
+    try:
+        await call.answer(
+            text=text,
+            show_alert=show_alert,
+        )
+
+    except TelegramBadRequest as exc:
+
+        error_text = str(exc).lower()
+
+        if (
+            "query is too old" in error_text
+            or "response timeout expired" in error_text
+            or "query id is invalid" in error_text
+        ):
+            logger.warning(
+                "CALLBACK EXPIRED | user=%s | data=%s",
+                getattr(call.from_user, "id", None),
+                getattr(call, "data", None),
+            )
+            return False
+
+        logger.warning(
+            "CALLBACK ANSWER BAD REQUEST | %s",
+            exc,
+        )
+        return False
+
+    except Exception:
+        logger.exception(
+            "CALLBACK ANSWER ERROR"
+        )
+        return False
+
+    return True
+
+
+# ============================================================
+# JSON
+# ============================================================
+
 def safe_json(data):
+    """
+    Mengubah media JSON menjadi object Python.
+    """
 
     if isinstance(data, str):
 
         try:
             return json.loads(data)
 
+        except (json.JSONDecodeError, TypeError, ValueError):
+            logger.warning(
+                "INVALID MEDIA JSON"
+            )
+            return []
+
         except Exception:
+            logger.exception(
+                "MEDIA JSON PARSE ERROR"
+            )
             return []
 
     return data or []
 
+
+# ============================================================
+# CODE NORMALIZER
+# ============================================================
+
+CODE_REGEX = re.compile(
+    rf"\b[a-z0-9]{{{CODE_MIN_LENGTH},{CODE_MAX_LENGTH}}}\b",
+    re.IGNORECASE,
+)
+
+
+def normalize_code(code: str) -> str:
+    """
+    Normalisasi code agar pencarian konsisten.
+    """
+
+    if not code:
+        return ""
+
+    return (
+        str(code)
+        .strip()
+        .replace(" ", "")
+        .replace("\n", "")
+        .replace("\r", "")
+        .lower()
+    )
+
+
+# ============================================================
+# SAFE MESSAGE UPDATE
+# ============================================================
 
 async def safe_update(
     bot,
     chat_id: int,
     message_id: int,
     text: str,
-    reply_markup=None
+    reply_markup=None,
 ):
+    """
+    Edit message dengan rate limit sederhana.
+    """
 
     now = time.time()
 
-    if chat_id in _last_update:
+    previous = _last_update.get(chat_id)
 
-        if now - _last_update[chat_id] < UPDATE_DELAY:
-            return
+    if (
+        previous is not None
+        and now - previous < UPDATE_DELAY
+    ):
+        return False
 
     _last_update[chat_id] = now
 
     try:
-
         await bot.edit_message_text(
             chat_id=chat_id,
             message_id=message_id,
             text=text,
             parse_mode="HTML",
-            reply_markup=reply_markup
+            reply_markup=reply_markup,
         )
 
-    except TelegramBadRequest:
-        pass
+        return True
+
+    except TelegramBadRequest as exc:
+
+        # Message tidak berubah / message sudah tidak ada
+        # tidak boleh membuat bot crash.
+        logger.debug(
+            "GETFILE MESSAGE UPDATE IGNORED | %s",
+            exc,
+        )
+
+        return False
 
     except Exception:
-        logging.exception("GETFILE UPDATE ERROR")
+        logger.exception(
+            "GETFILE UPDATE ERROR"
+        )
+
+        return False
 
 
-# =====================================
+# ============================================================
 # BUTTON GET FILE
-# =====================================
+# ============================================================
 
-@router.callback_query(F.data == "getfile")
+@router.callback_query(
+    F.data == "getfile"
+)
 async def getfile_start(
     call: CallbackQuery,
-    state: FSMContext
+    state: FSMContext,
 ):
+    """
+    Membuka mode Get File.
 
-    await call.answer()
+    PENTING:
+    Callback langsung di-answer sebelum database/FSM/message
+    processing supaya tidak terkena timeout Telegram.
+    """
 
-    async with user_lock(call.from_user.id):
+    # ========================================================
+    # ACK CALLBACK SECEPAT MUNGKIN
+    # ========================================================
+
+    await safe_callback_answer(call)
+
+    user_id = int(call.from_user.id)
+
+    async with user_lock(user_id):
+
+        # ====================================================
+        # FSM
+        # ====================================================
 
         await state.clear()
-        await state.set_state(GetFileState.waiting_code)
+
+        await state.set_state(
+            GetFileState.waiting_code
+        )
+
+        # ====================================================
+        # TEXT
+        # ====================================================
 
         text = (
             "📥 <b>GET FILE MODE</b>\n\n"
@@ -130,49 +300,89 @@ async def getfile_start(
                 [
                     InlineKeyboardButton(
                         text="🏠 Home",
-                        callback_data="home"
+                        callback_data="home",
                     )
                 ]
             ]
         )
+
+        # ====================================================
+        # MESSAGE
+        # ====================================================
+
+        progress_id = None
 
         try:
 
             await call.message.edit_text(
                 text=text,
                 parse_mode="HTML",
-                reply_markup=keyboard
+                reply_markup=keyboard,
             )
 
             progress_id = call.message.message_id
 
         except TelegramBadRequest:
 
-            msg = await call.message.answer(
-                text=text,
-                parse_mode="HTML",
-                reply_markup=keyboard
+            try:
+
+                msg = await call.message.answer(
+                    text=text,
+                    parse_mode="HTML",
+                    reply_markup=keyboard,
+                )
+
+                progress_id = msg.message_id
+
+            except Exception:
+                logger.exception(
+                    "GETFILE START SEND MESSAGE ERROR"
+                )
+
+        except Exception:
+            logger.exception(
+                "GETFILE START EDIT ERROR"
             )
 
-            progress_id = msg.message_id
+        # ====================================================
+        # SAVE FSM DATA
+        # ====================================================
 
-        await state.update_data(
-            getfile_mode=True,
-            progress_msg_id=progress_id
-        )
+        if progress_id:
+
+            await state.update_data(
+                getfile_mode=True,
+                progress_msg_id=progress_id,
+            )
 
 
-# =====================================
+# ============================================================
 # OPEN FILE
-# =====================================
+# ============================================================
 
 async def open_file_by_code(
     message: Message,
     code: str,
-    state: FSMContext
+    state: FSMContext,
 ):
+    """
+    Membuka file berdasarkan code.
+    """
+
+    code = normalize_code(code)
+
+    if not code:
+        await state.clear()
+
+        return await message.answer(
+            "❌ CODE tidak valid."
+        )
 
     pool = await get_pool()
+
+    # ========================================================
+    # DATABASE FILE
+    # ========================================================
 
     file = await pool.fetchrow(
         """
@@ -189,12 +399,12 @@ async def open_file_by_code(
         WHERE LOWER(TRIM(code)) = LOWER(TRIM($1))
         LIMIT 1
         """,
-        code
+        code,
     )
 
-    # =====================================
+    # ========================================================
     # FILE TIDAK DITEMUKAN
-    # =====================================
+    # ========================================================
 
     if not file:
 
@@ -204,13 +414,15 @@ async def open_file_by_code(
             "❌ File tidak ditemukan."
         )
 
-    # =====================================
-    # CEK MEDIA
-    # =====================================
+    # ========================================================
+    # MEDIA
+    # ========================================================
 
-    media = safe_json(file["media"])
+    media = safe_json(
+        file["media"]
+    )
 
-    if not media:
+    if not isinstance(media, list) or not media:
 
         await state.clear()
 
@@ -218,115 +430,231 @@ async def open_file_by_code(
             "❌ File kosong."
         )
 
-    # =====================================
-    # CEK EXPIRED
-    # =====================================
+    # ========================================================
+    # EXPIRED
+    # ========================================================
 
-    if (
-        file["expires_at"]
-        and file["expires_at"].timestamp() < time.time()
-    ):
+    expires_at = file["expires_at"]
 
-        await state.clear()
+    if expires_at:
 
-        return await message.answer(
-            "❌ File sudah kadaluarsa."
+        try:
+
+            if expires_at.timestamp() < time.time():
+
+                await state.clear()
+
+                return await message.answer(
+                    "❌ File sudah kadaluarsa."
+                )
+
+        except Exception:
+            logger.warning(
+                "INVALID EXPIRES_AT | code=%s",
+                code,
+                exc_info=True,
+            )
+
+    # ========================================================
+    # OWNER
+    # ========================================================
+
+    owner_id = file["owner_id"]
+
+    owner = False
+
+    try:
+
+        owner = (
+            int(message.from_user.id)
+            == int(owner_id)
         )
 
-    # =====================================
-    # CEK OWNER
-    # =====================================
+    except (ValueError, TypeError):
 
-    owner = (
-        message.from_user.id == file["owner_id"]
+        owner = False
+
+    # ========================================================
+    # PAYMENT
+    # ========================================================
+
+    is_paid = bool(
+        file["is_paid"]
     )
 
-    # =====================================
-    # STATUS PEMBAYARAN
-    # =====================================
-
-    is_paid = bool(file["is_paid"])
     price = file["price"] or 0
 
-    # =====================================
-    # USER LEVEL + CREATOR ACCESS
-    # =====================================
+    try:
+        price = int(price)
 
-    user_level = await get_user_status(
-        pool,
-        message.from_user.id
-    )
+    except (ValueError, TypeError):
+        price = 0
 
-    creator_access = await pool.fetchval(
-        """
-        SELECT COALESCE(is_creator, FALSE)
-               AND COALESCE(creator_status, 'none') = 'approved'
-        FROM users
-        WHERE user_id = $1
-        """,
-        message.from_user.id
-    ) or False
+    # ========================================================
+    # USER STATUS
+    # ========================================================
 
-    # =====================================
-    # CEK PURCHASE
-    # =====================================
+    try:
 
-    access = await pool.fetchval(
-        """
-        SELECT EXISTS(
-            SELECT 1
-            FROM file_purchases
-            WHERE user_id = $1
-              AND file_code = $2
-              AND status = 'paid'
+        user_level = await get_user_status(
+            pool,
+            message.from_user.id,
         )
-        """,
-        message.from_user.id,
-        code
-    )
 
-    # =====================================
-    # CEK AKSES
-    # =====================================
+    except Exception:
+
+        logger.exception(
+            "GET USER STATUS ERROR | user=%s",
+            message.from_user.id,
+        )
+
+        user_level = None
+
+    # ========================================================
+    # CREATOR ACCESS
+    # ========================================================
+
+    creator_access = False
+
+    try:
+
+        creator_access = await pool.fetchval(
+            """
+            SELECT
+                COALESCE(is_creator, FALSE)
+                AND COALESCE(
+                    creator_status,
+                    'none'
+                ) = 'approved'
+            FROM users
+            WHERE chat_id = $1
+            LIMIT 1
+            """,
+            message.from_user.id,
+        ) or False
+
+    except Exception:
+
+        logger.exception(
+            "CREATOR ACCESS CHECK ERROR | user=%s",
+            message.from_user.id,
+        )
+
+        creator_access = False
+
+    # ========================================================
+    # PURCHASE
+    # ========================================================
+
+    access = False
+
+    try:
+
+        access = await pool.fetchval(
+            """
+            SELECT EXISTS(
+                SELECT 1
+                FROM file_purchases
+                WHERE user_id = $1
+                  AND LOWER(TRIM(file_code))
+                      = LOWER(TRIM($2))
+                  AND status = 'paid'
+            )
+            """,
+            message.from_user.id,
+            code,
+        )
+
+    except Exception:
+
+        logger.exception(
+            "PURCHASE ACCESS CHECK ERROR | "
+            "user=%s | code=%s",
+            message.from_user.id,
+            code,
+        )
+
+        access = False
+
+    # ========================================================
+    # FINAL ACCESS
+    # ========================================================
 
     has_access = (
         owner
-        or access
-        or creator_access
-        or user_level in ("vip", "vvip")
+        or bool(access)
+        or bool(creator_access)
+        or user_level in (
+            "vip",
+            "vvip",
+        )
     )
 
-    # =====================================
-    # 👁 TAMBAH VIEW
-    #
-    # View hanya dihitung kalau user
-    # benar-benar punya akses ke file.
-    #
-    # File gratis     -> dihitung
-    # Owner            -> dihitung
-    # Sudah membeli    -> dihitung
-    # VIP/VVIP         -> dihitung
-    # Belum membeli   -> TIDAK dihitung
-    # =====================================
+    # ========================================================
+    # VIEW COUNT
+    # ========================================================
 
     if not is_paid or has_access:
-        viewed = await pool.fetchrow(
-            """INSERT INTO file_views(user_id,file_code) VALUES($1,$2)
-               ON CONFLICT(user_id,file_code) DO NOTHING RETURNING user_id""",
-            message.from_user.id, file["code"]
-        )
-        if viewed:
-            await pool.execute(
-                """UPDATE files SET views=COALESCE(views,0)+1,
-                   view_count=COALESCE(view_count,0)+1 WHERE code=$1""",
-                file["code"]
+
+        try:
+
+            viewed = await pool.fetchrow(
+                """
+                INSERT INTO file_views
+                (
+                    user_id,
+                    file_code
+                )
+                VALUES
+                (
+                    $1,
+                    $2
+                )
+                ON CONFLICT
+                (
+                    user_id,
+                    file_code
+                )
+                DO NOTHING
+                RETURNING user_id
+                """,
+                message.from_user.id,
+                file["code"],
             )
+
+            if viewed:
+
+                await pool.execute(
+                    """
+                    UPDATE files
+                    SET
+                        views =
+                            COALESCE(views, 0) + 1,
+                        view_count =
+                            COALESCE(view_count, 0) + 1
+                    WHERE code = $1
+                    """,
+                    file["code"],
+                )
+
+        except Exception:
+
+            # Statistik gagal tidak boleh membuat
+            # user kehilangan akses ke file.
+            logger.exception(
+                "FILE VIEW UPDATE ERROR | code=%s",
+                file["code"],
+            )
+
+    # ========================================================
+    # CLEAR FSM
+    # ========================================================
 
     await state.clear()
 
-    # =====================================
-    # FILE BERBAYAR TAPI BELUM PUNYA AKSES
-    # =====================================
+    # ========================================================
+    # PAID BUT NO ACCESS
+    # ========================================================
 
     if is_paid and not has_access:
 
@@ -334,101 +662,139 @@ async def open_file_by_code(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text=f"💳 BAYAR Rp {price:,.0f}".replace(",", "."),
-                        callback_data=f"pay:{code}"
+                        text=(
+                            f"💳 BAYAR Rp "
+                            f"{price:,.0f}"
+                        ).replace(",", "."),
+                        callback_data=f"pay:{code}",
                     )
                 ],
                 [
                     InlineKeyboardButton(
                         text="🏠 Home",
-                        callback_data="home"
+                        callback_data="home",
                     )
-                ]
+                ],
             ]
         )
 
         return await message.answer(
             (
                 "🔒 <b>FILE BERBAYAR</b>\n\n"
-                f"🔑 CODE : <code>{code}</code>\n"
-                f"💰 Harga : Rp {price:,}\n\n"
-                "Silakan lakukan pembayaran untuk membuka file."
+                f"🔑 CODE : "
+                f"<code>{code}</code>\n"
+                f"💰 Harga : "
+                f"Rp {price:,}\n\n"
+                "Silakan lakukan pembayaran "
+                "untuk membuka file."
             ).replace(",", "."),
             parse_mode="HTML",
-            reply_markup=keyboard
+            reply_markup=keyboard,
         )
 
-    # =====================================
-    # FILE BERHASIL DIBUKA
-    # =====================================
+    # ========================================================
+    # OPEN FILE
+    # ========================================================
 
-    from handlers.open_menu import open_keyboard
+    try:
+
+        from handlers.open_menu import open_keyboard
+
+    except Exception:
+
+        logger.exception(
+            "OPEN MENU IMPORT ERROR"
+        )
+
+        return await message.answer(
+            "❌ Menu file sedang mengalami masalah."
+        )
+
+    title = str(
+        file["title"] or "Tanpa Judul"
+    )
 
     return await message.answer(
         (
             "✅ <b>FILE DITEMUKAN</b>\n\n"
-            f"📝 Judul : <b>{file['title']}</b>\n"
-            f"📦 Total Media : <b>{len(media)}</b>\n\n"
+            f"📝 Judul : "
+            f"<b>{title}</b>\n"
+            f"📦 Total Media : "
+            f"<b>{len(media)}</b>\n\n"
             "Pilih metode pengiriman:"
         ),
         parse_mode="HTML",
-        reply_markup=open_keyboard(code)
+        reply_markup=open_keyboard(code),
     )
 
 
-# =====================================
-# RECEIVE CODE
-# =====================================
-
-CODE_REGEX = re.compile(
-    r"\b[a-z0-9]{30,60}\b",
-    re.IGNORECASE
-)
-
-
-def normalize_code(code: str):
-
-    return (
-        code.strip()
-        .replace(" ", "")
-        .replace("\n", "")
-        .lower()
-    )
-
+# ============================================================
+# PROCESS CODE
+# ============================================================
 
 async def process_code(
     message: Message,
-    code: str
+    code: str,
 ):
+    """
+    Compatibility helper untuk pemanggilan dari handler lain.
+    """
 
     code = normalize_code(code)
 
     class DummyState:
 
         async def clear(self):
-            pass
+            return None
+
+        async def get_data(self):
+            return {}
+
+        async def update_data(self, **kwargs):
+            return None
 
     return await open_file_by_code(
         message=message,
         code=code,
-        state=DummyState()
+        state=DummyState(),
     )
 
 
+# ============================================================
+# RECEIVE CODE
+# ============================================================
+
 @router.message(
-    StateFilter(GetFileState.waiting_code),
-    F.text
+    StateFilter(
+        GetFileState.waiting_code
+    ),
+    F.text,
 )
 async def receive_code(
     message: Message,
-    state: FSMContext
+    state: FSMContext,
 ):
+    """
+    Menerima code dari user.
+    """
 
-    async with user_lock(message.from_user.id):
+    user_id = int(
+        message.from_user.id
+    )
 
-        text = (message.text or "").strip()
+    async with user_lock(user_id):
 
-        match = CODE_REGEX.search(text)
+        text = (
+            message.text or ""
+        ).strip()
+
+        match = CODE_REGEX.search(
+            text
+        )
+
+        # ====================================================
+        # INVALID CODE
+        # ====================================================
 
         if not match:
 
@@ -440,76 +806,138 @@ async def receive_code(
 
             return await message.answer(
                 "❌ Itu bukan CODE bot saya.\n\n"
-                "Silakan kirim CODE yang benar atau tekan Cancel."
+                "Silakan kirim CODE yang benar "
+                "atau tekan Cancel."
             )
 
-        code = normalize_code(match.group())
+        # ====================================================
+        # NORMALIZE
+        # ====================================================
+
+        code = normalize_code(
+            match.group()
+        )
+
+        # ====================================================
+        # DELETE USER MESSAGE
+        # ====================================================
 
         try:
+
             await message.delete()
 
         except Exception:
             pass
 
-        data = await state.get_data()
+        # ====================================================
+        # DELETE PROGRESS MESSAGE
+        # ====================================================
 
-        progress_id = data.get("progress_msg_id")
+        try:
 
-        if progress_id:
+            data = await state.get_data()
 
-            try:
+            progress_id = data.get(
+                "progress_msg_id"
+            )
 
-                await message.bot.delete_message(
-                    chat_id=message.chat.id,
-                    message_id=progress_id
-                )
+            if progress_id:
 
-            except Exception:
-                pass
+                try:
+
+                    await message.bot.delete_message(
+                        chat_id=message.chat.id,
+                        message_id=int(
+                            progress_id
+                        ),
+                    )
+
+                except Exception:
+                    pass
+
+        except Exception:
+
+            logger.exception(
+                "GETFILE PROGRESS DELETE ERROR"
+            )
+
+        # ====================================================
+        # OPEN
+        # ====================================================
 
         return await open_file_by_code(
             message=message,
             code=code,
-            state=state
+            state=state,
         )
 
 
-# =====================================
+# ============================================================
 # CANCEL GET FILE
-# =====================================
+# ============================================================
 
-@router.callback_query(F.data == "cancel_getfile")
+@router.callback_query(
+    F.data == "cancel_getfile"
+)
 async def cancel_getfile(
     call: CallbackQuery,
-    state: FSMContext
+    state: FSMContext,
 ):
+    """
+    Membatalkan mode Get File.
+    """
 
-    await call.answer()
+    # ACK SECEPAT MUNGKIN
+    await safe_callback_answer(call)
 
-    async with user_lock(call.from_user.id):
+    user_id = int(
+        call.from_user.id
+    )
+
+    async with user_lock(user_id):
 
         await state.clear()
+
+        text = (
+            "❌ <b>Get File dibatalkan.</b>"
+        )
+
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="🏠 Home",
+                        callback_data="home",
+                    )
+                ]
+            ]
+        )
 
         try:
 
             await call.message.edit_text(
-                "❌ <b>Get File dibatalkan.</b>",
+                text,
                 parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            InlineKeyboardButton(
-                                text="🏠 Home",
-                                callback_data="home"
-                            )
-                        ]
-                    ]
-                )
+                reply_markup=keyboard,
             )
+
+        except TelegramBadRequest:
+
+            try:
+
+                await call.message.answer(
+                    text,
+                    parse_mode="HTML",
+                    reply_markup=keyboard,
+                )
+
+            except Exception:
+                logger.exception(
+                    "CANCEL GETFILE SEND ERROR"
+                )
 
         except Exception:
 
-            await call.message.answer(
-                "❌ <b>Get File dibatalkan.</b>",
-                parse_mode="HTML"
+            logger.exception(
+                "CANCEL GETFILE EDIT ERROR"
             )
