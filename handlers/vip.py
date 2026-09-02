@@ -170,8 +170,8 @@ def build_vvip(
             "• Semua fitur VIP\n"
             "• Bisa upload & simpan media\n"
             "• Fitur premium terbuka\n\n"
-            "💳 Pembayaran bisa otomatis "
-            "atau QR manual."
+            "📷 Pembayaran menggunakan "
+            "QR manual."
         )
     else:
         text = (
@@ -185,8 +185,7 @@ def build_vvip(
             "• All VIP features\n"
             "• Upload & save media\n"
             "• Premium features unlocked\n\n"
-            "💳 Payment supports automatic "
-            "or manual QR."
+            "📷 Payment uses manual QR."
         )
     return text, kb.as_markup()
 async def open_vvip(
@@ -520,7 +519,11 @@ async def buy_vip(
     )
     if len(parts) != 2:
         return
-    paket_id = parts[1].strip()
+    paket_id = (
+        paket_id_override
+        if paket_id_override
+        else parts[1].strip()
+    )
     paket = VIP_PACKAGES.get(
         paket_id
     )
@@ -529,11 +532,8 @@ async def buy_vip(
             "❌ Paket tidak ditemukan."
         )
         return
-    await _create_auto_vip(
-        call,
-        paket_id,
-        paket,
-    )
+    # Semua pembelian VIP/VVIP langsung memakai QR manual.
+    return await vip_manual(call, paket_id_override=paket_id)
 # ============================================================
 # EXTEND VIP
 # ============================================================
@@ -560,11 +560,8 @@ async def extend_vip(
             "❌ Paket tidak ditemukan."
         )
         return
-    await _create_auto_vip(
-        call,
-        paket_id,
-        paket,
-    )
+    # Perpanjangan VIP/VVIP juga langsung memakai QR manual.
+    return await vip_manual(call, paket_id_override=paket_id)
 # ============================================================
 # MANUAL FALLBACK
 # ============================================================
@@ -611,6 +608,7 @@ async def _manual_fallback(
 )
 async def vip_manual(
     call: CallbackQuery,
+    paket_id_override: str | None = None,
 ):
     # ACK FIRST
     await safe_callback_answer(call)

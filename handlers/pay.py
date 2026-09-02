@@ -817,20 +817,10 @@ async def choose_payment(
         file["price"] or 0
     )
 
-    await call.message.edit_text(
-        (
-            "💳 <b>PILIH PEMBAYARAN</b>\n\n"
-            f"📦 File: <b>{file['title']}</b>\n"
-            f"💰 Harga: <b>{format_rupiah(price)}</b>\n\n"
-            "Silahkan pilih metode pembayaran."
-        ),
-        parse_mode="HTML",
-        reply_markup=payment_method_keyboard(
-            code
-        ),
-    )
-
-    await call.answer()
+    # Semua pembayaran Get File sekarang diarahkan langsung ke QR manual.
+    # Tidak membuat invoice BayarGG/DompetX dan tidak menampilkan pilihan
+    # gateway otomatis.
+    return await manual_payment(call)
 
 
 # ============================================================
