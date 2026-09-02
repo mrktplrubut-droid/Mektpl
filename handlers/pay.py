@@ -1,18 +1,18 @@
+import html
 import json
 import logging
 import secrets
 from aiogram import Router, F
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
+    Message,
 )
 from database import fetchrow, fetch, execute
-from utils.redis_client import (
-    safe_set,
-    safe_get,
-    safe_delete,
-)
+from utils.redis_client import safe_set, safe_get
 from config import (
     STORAGE_CHANNEL_ID,
     NOTIF_CHANNEL_ID,
@@ -26,7 +26,6 @@ router = Router()
 # ============================================================
 MEDIA_TTL = 3600
 PER_PAGE = 10
-CHECK_LOCK = set()
 SUCCESS_STATUSES = {
     "paid",
     "success",
@@ -41,6 +40,11 @@ FAILED_STATUSES = {
     "failed",
     "rejected",
 }
+# ============================================================
+# FSM - ADMIN REJECT REASON
+# ============================================================
+class RejectPaymentState(StatesGroup):
+    waiting_reason = State()
 # ============================================================
 # HELPERS
 # ============================================================
@@ -58,9 +62,16 @@ def normalize_status(value) -> str:
     return str(value or "").strip().lower()
 def is_admin(user_id: int) -> bool:
     try:
-        return int(user_id) in {int(x) for x in ADMIN_IDS}
+        return int(user_id) in {
+            int(x) for x in ADMIN_IDS
+        }
     except Exception:
         return False
+def clean_html(value) -> str:
+    """
+    Mencegah input user/admin merusak HTML Telegram.
+    """
+    return html.escape(str(value or ""))
 # ============================================================
 # UPGRADE NOTIFICATION
 # ============================================================
@@ -88,9 +99,11 @@ async def send_upgrade_notif(bot, user_id, tier):
             parse_mode="HTML",
         )
     except Exception:
-        logger.exception("UPGRADE NOTIF ERROR")
+        logger.exception(
+            "UPGRADE NOTIF ERROR"
+        )
 # ============================================================
-# PAYMENT KEYBOARD
+# MANUAL PAYMENT KEYBOARD
 # ============================================================
 def manual_payment_keyboard(code):
     return InlineKeyboardMarkup(
@@ -115,7 +128,7 @@ def manual_payment_keyboard(code):
 def media_keyboard(media_id, page, total):
     max_page = max(
         1,
-        (total + PER_PAGE - 1) // PER_PAGE
+        (total + PER_PAGE - 1) // PER_PAGE,
     )
     buttons = []
     nav = []
@@ -162,13 +175,14 @@ def media_keyboard(media_id, page, total):
 # ============================================================
 # PAYMENT ENTRY
 # ============================================================
-@router.callback_query(F.data.startswith("pay:"))
+@router.callback_query(
+    F.data.startswith("pay:")
+)
 async def choose_payment(call: CallbackQuery):
-    """
-    Semua pembelian file sekarang menggunakan QR MANUAL.
-    QR otomatis sementara dinonaktifkan.
-    """
-    code = call.data.split(":", 1)[1].strip()
+    code = call.data.split(
+        ":",
+        1,
+    )[1].strip()
     if not code:
         return await call.answer(
             "❌ Code tidak valid.",
@@ -188,44 +202,20 @@ async def choose_payment(call: CallbackQuery):
             "❌ File tidak ditemukan.",
             show_alert=True,
         )
-    price = int(file["price"] or 0)
+    try:
+        price = int(file["price"] or 0)
+    except Exception:
+        price = 0
     if price <= 0:
         return await call.answer(
             "❌ Harga file tidak valid.",
             show_alert=True,
         )
-    # Langsung ke QR Manual
+    # Semua pembayaran menggunakan QR Manual
     return await show_manual_payment(
         call,
         code,
         file,
-    )
-# ============================================================
-# OLD AUTOMATIC PAYMENT BLOCK
-# ============================================================
-@router.callback_query(
-    F.data.startswith("auto:")
-)
-async def disabled_auto_payment(call: CallbackQuery):
-    """
-    QR Otomatis 1 sengaja dinonaktifkan sementara.
-    """
-    await call.answer(
-        "⚠️ QR Otomatis sedang dalam perbaikan pusat.\n"
-        "Silakan gunakan QR Manual.",
-        show_alert=True,
-    )
-@router.callback_query(
-    F.data.startswith("dompetx:")
-)
-async def disabled_dompetx_payment(call: CallbackQuery):
-    """
-    QR Otomatis 2 sengaja dinonaktifkan sementara.
-    """
-    await call.answer(
-        "⚠️ QR Otomatis sedang dalam perbaikan pusat.\n"
-        "Silakan gunakan QR Manual.",
-        show_alert=True,
     )
 # ============================================================
 # MANUAL PAYMENT
@@ -237,7 +227,18 @@ async def show_manual_payment(
 ):
     user_id = call.from_user.id
     # ========================================================
-    # CEK PENDING EXISTING
+    # VALIDASI QR
+    # ========================================================
+    if not MANUAL_QR_FILE_ID:
+        logger.error(
+            "MANUAL_QR_FILE_ID belum dikonfigurasi"
+        )
+        return await call.answer(
+            "❌ QR Manual belum tersedia.",
+            show_alert=True,
+        )
+    # ========================================================
+    # CEK TRANSAKSI PENDING
     # ========================================================
     existing = await fetchrow(
         """
@@ -307,9 +308,9 @@ async def show_manual_payment(
     caption = (
         "📷 <b>PEMBAYARAN MANUAL</b>\n\n"
         f"📄 File:\n"
-        f"<b>{file['title']}</b>\n\n"
+        f"<b>{clean_html(file['title'])}</b>\n\n"
         f"🔑 Code:\n"
-        f"<code>{code}</code>\n\n"
+        f"<code>{clean_html(code)}</code>\n\n"
         f"💰 Harga:\n"
         f"<b>{format_rupiah(price)}</b>\n\n"
         "━━━━━━━━━━━━━━━━━━\n"
@@ -354,14 +355,24 @@ async def show_manual_payment(
     await call.answer(
         "📷 Silakan lakukan pembayaran."
     )
+# ============================================================
+# DIRECT MANUAL BUTTON
+# ============================================================
 @router.callback_query(
     F.data.startswith("manual:")
 )
-async def manual_payment(call: CallbackQuery):
+async def manual_payment(
+    call: CallbackQuery,
+):
     code = call.data.split(
         ":",
         1,
     )[1].strip()
+    if not code:
+        return await call.answer(
+            "❌ Code tidak valid.",
+            show_alert=True,
+        )
     file = await fetchrow(
         """
         SELECT *
@@ -387,7 +398,9 @@ async def manual_payment(call: CallbackQuery):
 @router.callback_query(
     F.data.startswith("manualcheck:")
 )
-async def manual_check(call: CallbackQuery):
+async def manual_check(
+    call: CallbackQuery,
+):
     code = call.data.split(
         ":",
         1,
@@ -431,28 +444,24 @@ async def manual_check(call: CallbackQuery):
     text = (
         "📥 <b>MANUAL PAYMENT CHECK</b>\n\n"
         f"👤 User: <code>{user_id}</code>\n"
-        f"📄 File: <b>{file['title']}</b>\n"
-        f"🔑 Code: <code>{code}</code>\n"
+        f"📄 File: <b>{clean_html(file['title'])}</b>\n"
+        f"🔑 Code: <code>{clean_html(code)}</code>\n"
         f"💰 Harga: "
         f"<b>{format_rupiah(purchase['paid_price'])}</b>\n"
         f"🧾 ID: <code>{purchase['id']}</code>\n"
         f"💳 Payment: "
-        f"<code>{purchase['payment_id']}</code>"
+        f"<code>{clean_html(purchase['payment_id'])}</code>"
     )
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text="✅ Approve",
-                    callback_data=(
-                        f"approve:{purchase['id']}"
-                    ),
+                    callback_data=f"approve:{purchase['id']}",
                 ),
                 InlineKeyboardButton(
                     text="❌ Reject",
-                    callback_data=(
-                        f"reject:{purchase['id']}"
-                    ),
+                    callback_data=f"reject:{purchase['id']}",
                 ),
             ]
         ]
@@ -534,7 +543,10 @@ async def finish_payment(
             UPDATE file_purchases
             SET
                 status='paid',
-                paid_at=COALESCE(paid_at, NOW())
+                paid_at=COALESCE(
+                    paid_at,
+                    NOW()
+                )
             WHERE id=$1
               AND status='pending'
             RETURNING *
@@ -560,14 +572,16 @@ async def finish_payment(
                 ),
                 "media": media_list,
                 "share_media": bool(
-                    file.get("share_media", False)
+                    file.get(
+                        "share_media",
+                        False,
+                    )
                 ),
                 "invoice": invoice,
                 "purchase_id": purchase_id,
             },
             ex=MEDIA_TTL,
         )
-        # Simpan session supaya bisa dihapus saat cancel/cleanup
         await execute(
             """
             UPDATE file_purchases
@@ -648,7 +662,9 @@ async def finish_payment(
                         END
                 WHERE code=$1
                   AND completed=FALSE
-                RETURNING user_id, completed
+                RETURNING
+                    user_id,
+                    completed
                 """,
                 file["code"],
             )
@@ -659,7 +675,7 @@ async def finish_payment(
                             row["user_id"],
                             (
                                 "🎉 <b>Progress Code Free 3/3!</b>\n\n"
-                                f"Code <code>{file['code']}</code>\n"
+                                f"Code <code>{clean_html(file['code'])}</code>\n"
                                 "sudah bisa kamu buka gratis "
                                 "karena telah mencapai 3 pembelian berhasil."
                             ),
@@ -767,9 +783,12 @@ async def finish_payment(
                 NOTIF_CHANNEL_ID,
                 (
                     "💸 <b>FILE PAYMENT SUCCESS</b>\n\n"
-                    f"📄 Judul: <b>{file['title']}</b>\n"
-                    f"📁 Code: <code>{file['code']}</code>\n"
-                    f"👤 User: <code>{masked}</code>"
+                    f"📄 Judul: "
+                    f"<b>{clean_html(file['title'])}</b>\n"
+                    f"📁 Code: "
+                    f"<code>{clean_html(file['code'])}</code>\n"
+                    f"👤 User: "
+                    f"<code>{masked}</code>"
                 ),
                 parse_mode="HTML",
                 reply_markup=keyboard,
@@ -817,7 +836,9 @@ async def finish_payment(
         )
         logger.info(
             "PAYMENT FINISHED | "
-            "purchase=%s | user=%s | code=%s",
+            "purchase=%s | "
+            "user=%s | "
+            "code=%s",
             purchase_id,
             purchase["user_id"],
             file["code"],
@@ -834,22 +855,31 @@ async def finish_payment(
 @router.callback_query(
     F.data.startswith("approve:")
 )
-async def approve_manual(call: CallbackQuery):
-    if not is_admin(call.from_user.id):
+async def approve_manual(
+    call: CallbackQuery,
+    state: FSMContext,
+):
+    if not is_admin(
+        call.from_user.id
+    ):
         return await call.answer(
             "❌ Kamu bukan admin.",
             show_alert=True,
         )
+    # Bersihkan state reject apabila ada
+    await state.clear()
     try:
         purchase_id = int(
-            call.data.split(":", 1)[1]
+            call.data.split(
+                ":",
+                1,
+            )[1]
         )
     except ValueError:
         return await call.answer(
             "❌ ID transaksi tidak valid.",
             show_alert=True,
         )
-    # Ambil pending saja
     purchase = await fetchrow(
         """
         SELECT *
@@ -884,7 +914,7 @@ async def approve_manual(call: CallbackQuery):
     )
     user_id = purchase["user_id"]
     # ========================================================
-    # SEND USER MESSAGE
+    # USER PROCESSING
     # ========================================================
     try:
         user_message = await call.bot.send_message(
@@ -921,9 +951,12 @@ async def approve_manual(call: CallbackQuery):
         await call.message.edit_text(
             (
                 "✅ <b>PEMBAYARAN DISETUJUI</b>\n\n"
-                f"👤 User: <code>{user_id}</code>\n"
-                f"📦 File: <b>{file['title']}</b>\n"
-                f"🔑 Code: <code>{file['code']}</code>\n"
+                f"👤 User: "
+                f"<code>{user_id}</code>\n"
+                f"📦 File: "
+                f"<b>{clean_html(file['title'])}</b>\n"
+                f"🔑 Code: "
+                f"<code>{clean_html(file['code'])}</code>\n"
                 f"💰 Harga: "
                 f"<b>{format_rupiah(purchase['paid_price'])}</b>"
             ),
@@ -937,23 +970,165 @@ async def approve_manual(call: CallbackQuery):
 # ============================================================
 # REJECT MANUAL
 # ============================================================
+#
+# ALUR BARU:
+#
+# Admin klik Reject
+#        ↓
+# Bot meminta alasan
+#        ↓
+# Admin mengetik alasan
+#        ↓
+# Transaksi menjadi rejected
+#        ↓
+# QR dihapus
+#        ↓
+# User menerima alasan penolakan
+#
+# ============================================================
 @router.callback_query(
     F.data.startswith("reject:")
 )
-async def reject_manual(call: CallbackQuery):
-    if not is_admin(call.from_user.id):
+async def reject_manual(
+    call: CallbackQuery,
+    state: FSMContext,
+):
+    # ========================================================
+    # ADMIN CHECK
+    # ========================================================
+    if not is_admin(
+        call.from_user.id
+    ):
         return await call.answer(
             "❌ Kamu bukan admin.",
             show_alert=True,
         )
+    # ========================================================
+    # PARSE ID
+    # ========================================================
     try:
         purchase_id = int(
-            call.data.split(":", 1)[1]
+            call.data.split(
+                ":",
+                1,
+            )[1]
         )
-    except ValueError:
+    except (ValueError, IndexError):
         return await call.answer(
             "❌ ID transaksi tidak valid.",
             show_alert=True,
+        )
+    # ========================================================
+    # VALIDASI TRANSAKSI
+    # ========================================================
+    purchase = await fetchrow(
+        """
+        SELECT *
+        FROM file_purchases
+        WHERE id=$1
+          AND status='pending'
+        LIMIT 1
+        """,
+        purchase_id,
+    )
+    if not purchase:
+        return await call.answer(
+            "❌ Transaksi tidak ditemukan / sudah diproses.",
+            show_alert=True,
+        )
+    # ========================================================
+    # SIMPAN DATA KE FSM
+    # ========================================================
+    await state.set_state(
+        RejectPaymentState.waiting_reason
+    )
+    await state.update_data(
+        purchase_id=purchase_id
+    )
+    # ========================================================
+    # ADMIN PROMPT
+    # ========================================================
+    try:
+        await call.message.reply(
+            (
+                "❌ <b>REJECT PEMBAYARAN</b>\n\n"
+                f"🧾 ID Transaksi: "
+                f"<code>{purchase_id}</code>\n"
+                f"👤 User: "
+                f"<code>{purchase['user_id']}</code>\n"
+                f"📦 Code: "
+                f"<code>{clean_html(purchase['file_code'])}</code>\n\n"
+                "📝 <b>Silakan kirim alasan penolakan.</b>\n\n"
+                "Contoh:\n"
+                "• Bukti pembayaran tidak valid\n"
+                "• Nominal pembayaran tidak sesuai\n"
+                "• Pembayaran belum masuk\n\n"
+                "Ketik <code>/cancelreject</code> "
+                "untuk membatalkan."
+            ),
+            parse_mode="HTML",
+        )
+    except Exception:
+        logger.exception(
+            "REJECT PROMPT ERROR"
+        )
+        await state.clear()
+        return await call.answer(
+            "❌ Gagal meminta alasan.",
+            show_alert=True,
+        )
+    await call.answer(
+        "📝 Silakan kirim alasan penolakan."
+    )
+# ============================================================
+# ADMIN SEND REJECT REASON
+# ============================================================
+@router.message(
+    RejectPaymentState.waiting_reason,
+    F.text,
+)
+async def receive_reject_reason(
+    message: Message,
+    state: FSMContext,
+):
+    # ========================================================
+    # ADMIN CHECK
+    # ========================================================
+    if not is_admin(
+        message.from_user.id
+    ):
+        return await message.answer(
+            "❌ Kamu bukan admin."
+        )
+    # ========================================================
+    # AMBIL STATE
+    # ========================================================
+    data = await state.get_data()
+    purchase_id = data.get(
+        "purchase_id"
+    )
+    if not purchase_id:
+        await state.clear()
+        return await message.answer(
+            "❌ Data transaksi tidak ditemukan.\n"
+            "Silakan ulangi proses Reject."
+        )
+    # ========================================================
+    # VALIDASI ALASAN
+    # ========================================================
+    reason = str(
+        message.text or ""
+    ).strip()
+    if not reason:
+        return await message.answer(
+            "❌ Alasan tidak boleh kosong.\n\n"
+            "Silakan kirim alasan penolakan."
+        )
+    # Batasi panjang agar pesan tetap aman
+    if len(reason) > 1000:
+        return await message.answer(
+            "❌ Alasan terlalu panjang.\n"
+            "Maksimal 1000 karakter."
         )
     # ========================================================
     # ATOMIC REJECT
@@ -961,7 +1136,8 @@ async def reject_manual(call: CallbackQuery):
     rejected = await fetchrow(
         """
         UPDATE file_purchases
-        SET status='rejected'
+        SET
+            status='rejected'
         WHERE id=$1
           AND status='pending'
         RETURNING *
@@ -969,70 +1145,151 @@ async def reject_manual(call: CallbackQuery):
         purchase_id,
     )
     if not rejected:
-        return await call.answer(
-            "❌ Pembayaran sudah diproses.",
-            show_alert=True,
+        await state.clear()
+        return await message.answer(
+            "❌ Transaksi sudah diproses oleh admin lain."
         )
     user_id = rejected["user_id"]
     code = rejected["file_code"]
     # ========================================================
+    # ESCAPE REASON
+    # ========================================================
+    safe_reason = clean_html(
+        reason
+    )
+    # ========================================================
     # NOTIFY USER
     # ========================================================
+    user_notified = False
     try:
-        await call.bot.send_message(
+        await message.bot.send_message(
             user_id,
             (
                 "❌ <b>Pembayaran Ditolak</b>\n\n"
-                f"📦 Code: <code>{code}</code>\n\n"
-                "Silakan lakukan pembayaran ulang."
+                f"📦 Code: "
+                f"<code>{clean_html(code)}</code>\n\n"
+                "📝 <b>Alasan Admin:</b>\n"
+                f"{safe_reason}\n\n"
+                "💡 Silakan lakukan pembayaran ulang "
+                "jika diperlukan."
+            ),
+            parse_mode="HTML",
+        )
+        user_notified = True
+    except Exception:
+        logger.exception(
+            "SEND REJECT REASON TO USER ERROR | "
+            "purchase=%s | user=%s",
+            purchase_id,
+            user_id,
+        )
+    # ========================================================
+    # DELETE PAYMENT QR
+    # ========================================================
+    qr_deleted = False
+    try:
+        qr_message_id = rejected.get(
+            "qr_message_id"
+        )
+        qr_chat_id = rejected.get(
+            "qr_chat_id"
+        )
+        if (
+            qr_message_id
+            and qr_chat_id
+        ):
+            await message.bot.delete_message(
+                chat_id=qr_chat_id,
+                message_id=qr_message_id,
+            )
+            qr_deleted = True
+    except Exception:
+        logger.warning(
+            "DELETE REJECT QR FAILED | "
+            "purchase=%s",
+            purchase_id,
+            exc_info=True,
+        )
+    # ========================================================
+    # UPDATE ADMIN MESSAGE
+    # ========================================================
+    # Cari pesan admin yang berisi tombol Reject.
+    #
+    # Karena message ID asli tersimpan di callback query,
+    # pesan tersebut tidak tersedia lagi di handler message.
+    #
+    # Sebagai gantinya, kita kirim hasil final ke admin.
+    # ========================================================
+    try:
+        await message.answer(
+            (
+                "❌ <b>PEMBAYARAN DITOLAK</b>\n\n"
+                f"🧾 ID: "
+                f"<code>{purchase_id}</code>\n"
+                f"👤 User: "
+                f"<code>{user_id}</code>\n"
+                f"📦 Code: "
+                f"<code>{clean_html(code)}</code>\n\n"
+                "📝 <b>Alasan:</b>\n"
+                f"{safe_reason}\n\n"
+                f"👤 User diberi notifikasi: "
+                f"{'✅ Ya' if user_notified else '❌ Gagal'}\n"
+                f"🗑 QR dihapus: "
+                f"{'✅ Ya' if qr_deleted else '⚠️ Tidak ditemukan'}"
             ),
             parse_mode="HTML",
         )
     except Exception:
         logger.exception(
-            "SEND REJECT USER ERROR"
+            "SEND ADMIN REJECT RESULT ERROR"
         )
     # ========================================================
-    # DELETE QR
+    # CLEAR FSM
     # ========================================================
-    try:
-        if (
-            rejected.get("qr_message_id")
-            and rejected.get("qr_chat_id")
-        ):
-            await call.bot.delete_message(
-                chat_id=rejected["qr_chat_id"],
-                message_id=rejected["qr_message_id"],
+    await state.clear()
+# ============================================================
+# CANCEL REJECT REASON
+# ============================================================
+@router.message(
+    RejectPaymentState.waiting_reason,
+    F.text == "/cancelreject",
+)
+async def cancel_reject_reason(
+    message: Message,
+    state: FSMContext,
+):
+    if not is_admin(
+        message.from_user.id
+    ):
+        return
+    data = await state.get_data()
+    purchase_id = data.get(
+        "purchase_id"
+    )
+    await state.clear()
+    await message.answer(
+        (
+            "↩️ <b>Reject dibatalkan.</b>\n\n"
+            + (
+                f"🧾 Transaksi <code>{purchase_id}</code> "
+                "masih berstatus <b>pending</b>."
+                if purchase_id
+                else "Silakan ulangi proses pembayaran."
             )
-    except Exception:
-        logger.warning(
-            "DELETE REJECT QR FAILED",
-            exc_info=True,
-        )
-    # ========================================================
-    # ADMIN MESSAGE
-    # ========================================================
-    try:
-        await call.message.edit_text(
-            (
-                "❌ <b>PEMBAYARAN DITOLAK</b>\n\n"
-                f"👤 User: <code>{user_id}</code>\n"
-                f"📦 Code: <code>{code}</code>"
-            ),
-            parse_mode="HTML",
-        )
-    except Exception:
-        pass
-    await call.answer(
-        "Pembayaran ditolak."
+        ),
+        parse_mode="HTML",
     )
 # ============================================================
-# CLOSE
+# CLOSE PAYMENT
 # ============================================================
 @router.callback_query(
     F.data == "close"
 )
-async def close_payment(call: CallbackQuery):
+async def close_payment(
+    call: CallbackQuery,
+    state: FSMContext,
+):
+    await state.clear()
     try:
         await call.message.delete()
     except Exception:
@@ -1047,10 +1304,6 @@ async def get_owned_media_session(
     call: CallbackQuery,
     media_id: str,
 ):
-    """
-    Memastikan session media benar-benar milik
-    user yang menekan tombol.
-    """
     data = await safe_get(
         f"paidmedia:{media_id}"
     )
@@ -1086,11 +1339,18 @@ async def get_owned_media_session(
 @router.callback_query(
     F.data.startswith("sp:")
 )
-async def send_page_media(call: CallbackQuery):
+async def send_page_media(
+    call: CallbackQuery,
+):
     try:
-        _, media_id, page_raw = call.data.split(":")
+        _, media_id, page_raw = (
+            call.data.split(":")
+        )
         page = int(page_raw)
-    except (ValueError, AttributeError):
+    except (
+        ValueError,
+        AttributeError,
+    ):
         return await call.answer(
             "❌ Data halaman tidak valid.",
             show_alert=True,
@@ -1103,13 +1363,15 @@ async def send_page_media(call: CallbackQuery):
         return
     media_list = data.get(
         "media",
-        []
+        [],
     )
     start = (
         page - 1
     ) * PER_PAGE
     end = start + PER_PAGE
-    items = media_list[start:end]
+    items = media_list[
+        start:end
+    ]
     if not items:
         return await call.answer(
             "❌ Halaman tidak ditemukan.",
@@ -1144,9 +1406,13 @@ async def send_page_media(call: CallbackQuery):
 @router.callback_query(
     F.data.startswith("sa:")
 )
-async def send_all_media(call: CallbackQuery):
+async def send_all_media(
+    call: CallbackQuery,
+):
     try:
-        _, media_id = call.data.split(":")
+        _, media_id = (
+            call.data.split(":")
+        )
     except ValueError:
         return await call.answer(
             "❌ Session tidak valid.",
@@ -1160,7 +1426,7 @@ async def send_all_media(call: CallbackQuery):
         return
     media_list = data.get(
         "media",
-        []
+        [],
     )
     if not media_list:
         return await call.answer(
@@ -1213,11 +1479,18 @@ async def send_all_media(call: CallbackQuery):
 @router.callback_query(
     F.data.startswith("mp:")
 )
-async def media_page(call: CallbackQuery):
+async def media_page(
+    call: CallbackQuery,
+):
     try:
-        _, media_id, page_raw = call.data.split(":")
+        _, media_id, page_raw = (
+            call.data.split(":")
+        )
         page = int(page_raw)
-    except (ValueError, AttributeError):
+    except (
+        ValueError,
+        AttributeError,
+    ):
         return await call.answer(
             "❌ Data halaman tidak valid.",
             show_alert=True,
@@ -1230,19 +1503,28 @@ async def media_page(call: CallbackQuery):
         return
     media_list = data.get(
         "media",
-        []
+        [],
     )
     if not media_list:
         return await call.answer(
             "❌ Media tidak ditemukan.",
             show_alert=True,
         )
-    total = len(media_list)
+    total = len(
+        media_list
+    )
     max_page = max(
         1,
-        (total + PER_PAGE - 1) // PER_PAGE
+        (
+            total
+            + PER_PAGE
+            - 1
+        ) // PER_PAGE,
     )
-    if page < 1 or page > max_page:
+    if (
+        page < 1
+        or page > max_page
+    ):
         return await call.answer(
             "❌ Halaman tidak valid.",
             show_alert=True,
@@ -1266,5 +1548,7 @@ async def media_page(call: CallbackQuery):
 @router.callback_query(
     F.data == "none"
 )
-async def none_callback(call: CallbackQuery):
+async def none_callback(
+    call: CallbackQuery,
+):
     await call.answer()
