@@ -40,6 +40,12 @@ def home_kb(user_id: int, lang: str = "id"):
                     text="❓ Bantuan" if lang == "id" else "❓ Help",
                     callback_data="help"
                 )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🌐 Bahasa" if lang == "id" else "🌐 Language",
+                    callback_data="change_language"
+                )
             ]
         ]
     )
