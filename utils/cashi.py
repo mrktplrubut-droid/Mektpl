@@ -1,7 +1,7 @@
 # utils/cashi.py
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 import httpx
 from config import (
     CASHI_API_KEY,
@@ -18,23 +18,41 @@ class Cashi:
     # ==================================================
     @staticmethod
     def _parse_datetime(value):
-        if not value:
+        """Normalize provider timestamps for asyncpg/PostgreSQL.
+
+        Cashi may return ISO-8601 values, values with a space separator,
+        or a zero-like value.  PostgreSQL ``timestamptz`` parameters must
+        receive a real ``datetime`` object, not the original JSON string.
+        Naive provider timestamps are treated as UTC.
+        """
+        if value is None or value == "":
             return None
+
         if isinstance(value, datetime):
+            if value.tzinfo is None:
+                return value.replace(tzinfo=timezone.utc)
             return value
+
         if not isinstance(value, str):
             logger.warning(
                 "CASHI INVALID DATETIME TYPE: %s",
                 type(value),
             )
             return None
-        # Cashi documentation can return "0"
-        if value == "0":
+
+        value = value.strip()
+        if not value or value == "0":
             return None
+
         try:
-            return datetime.fromisoformat(
-                value.replace("Z", "+00:00")
-            )
+            # Python's fromisoformat handles both 'T' and space separators.
+            normalized = value.replace("Z", "+00:00")
+            parsed = datetime.fromisoformat(normalized)
+
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+
+            return parsed
         except (ValueError, TypeError):
             logger.warning(
                 "CASHI INVALID DATETIME: %s",
