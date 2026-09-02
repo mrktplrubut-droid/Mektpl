@@ -18,6 +18,7 @@ from aiogram.types import (
 
 from database import fetchrow, fetch, execute
 from utils.redis_client import safe_set, safe_get
+from utils.cashi import Cashi
 
 from config import (
     STORAGE_CHANNEL_ID,
@@ -1025,8 +1026,10 @@ async def create_cashi_payment(
         or ""
     ).strip()
 
-    expires_at = cashi.get(
-        "expires_at"
+    # Cashi responses are JSON and may contain expires_at as a string.
+    # Normalize it before passing it to asyncpg (timestamptz).
+    expires_at = Cashi._parse_datetime(
+        cashi.get("expires_at")
     )
 
     # --------------------------------------------------------

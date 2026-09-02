@@ -39,7 +39,15 @@ def _signature_valid(payload: bytes, signature: str) -> bool:
         hashlib.sha256,
     ).hexdigest()
 
-    return hmac.compare_digest(expected, signature)
+    # Accept the two common representations of the same HMAC:
+    #   <hex>
+    #   sha256=<hex>
+    # Cashi documentation for this integration uses the raw hex digest.
+    supplied = signature.lower()
+    if supplied.startswith("sha256="):
+        supplied = supplied[7:].strip()
+
+    return hmac.compare_digest(expected, supplied)
 
 
 class _WebhookMessage:
@@ -262,12 +270,24 @@ async def _handle(request: Request):
     return PlainTextResponse("OK", status_code=200)
 
 
+@router.get("/api/webhook/cashi")
+async def cashi_webhook_health():
+    # Cashi/dashboard connectivity checks may use GET.  Never process a
+    # payment on GET; simply report that the endpoint is reachable.
+    return PlainTextResponse("OK", status_code=200)
+
+
 @router.post("/api/webhook/cashi")
 async def cashi_webhook(request: Request):
     return await _handle(request)
 
 
 # Optional alias for deployments that prefer /webhook/cashi.
+@router.get("/webhook/cashi")
+async def cashi_webhook_alias_health():
+    return PlainTextResponse("OK", status_code=200)
+
+
 @router.post("/webhook/cashi")
 async def cashi_webhook_alias(request: Request):
     return await _handle(request)

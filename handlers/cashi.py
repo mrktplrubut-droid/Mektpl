@@ -560,8 +560,9 @@ async def create_cashi(
     # ========================================================
     # EXPIRES
     # ========================================================
-    expires_at = payment.get(
-        "expires_at"
+    # Always pass a real datetime to asyncpg for timestamptz columns.
+    expires_at = Cashi._parse_datetime(
+        payment.get("expires_at")
     )
     # ========================================================
     # OPTIONAL DATA
