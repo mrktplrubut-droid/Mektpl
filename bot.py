@@ -1,10 +1,16 @@
 from aiogram import Bot, Dispatcher
+from aiogram.exceptions import TelegramBadRequest
+import logging
 from aiogram.client.default import DefaultBotProperties
 from config import BOT_TOKEN
 from middlewares.ban import BanMiddleware
 from middlewares.maintenance import MaintenanceMiddleware
 from middlewares.ratelimit import RateLimitMiddleware
 from middlewares.loading import CallbackLoadingMiddleware
+from utils.telegram_safe import install_telegram_edit_guards
+# Install before routers are imported so every direct aiogram edit call is protected.
+install_telegram_edit_guards()
+
 # ============================================================
 # BOT INIT
 # ============================================================
@@ -15,6 +21,24 @@ bot = Bot(
     )
 )
 dp = Dispatcher()
+
+# ============================================================
+# GLOBAL TELEGRAM ERROR HANDLING
+# ============================================================
+# Telegram returns this error when code tries to edit a message
+# with exactly the same text and inline keyboard. This is a benign
+# race condition (often caused by double-clicks / concurrent workers),
+# so do not let it bubble up as an unhandled update exception.
+@dp.errors()
+async def telegram_error_handler(event):
+    exception = event.exception
+
+    if isinstance(exception, TelegramBadRequest) and "message is not modified" in str(exception).lower():
+        logging.debug("Telegram ignored duplicate message edit: %s", exception)
+        return True
+
+    # Let other errors keep their normal aiogram behaviour/logging.
+    return False
 # ============================================================
 # MIDDLEWARE
 # ============================================================
