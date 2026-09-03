@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 import aiohttp
 from aiogram import Router, F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -665,24 +666,79 @@ async def delete_payment_message(
     bot,
     purchase,
 ):
+    """Best-effort deletion of an old payment message.
+
+    Telegram returns 'message to delete not found' when the message was
+    already deleted. That is a normal/idempotent condition, not a payment
+    failure, so it is intentionally ignored.
+    """
+    message_id = purchase.get("qr_message_id")
+    chat_id = purchase.get("qr_chat_id")
+    if not message_id or not chat_id:
+        return False
     try:
-        message_id = purchase.get(
-            "qr_message_id"
-        )
-        chat_id = purchase.get(
-            "qr_chat_id"
-        )
-        if not message_id or not chat_id:
-            return
         await bot.delete_message(
             chat_id=int(chat_id),
             message_id=int(message_id),
         )
-    except Exception:
+        return True
+    except TelegramBadRequest as exc:
+        if "message to delete not found" in str(exc).lower():
+            logger.info(
+                "PAYMENT MESSAGE ALREADY GONE | chat=%s | message=%s",
+                chat_id,
+                message_id,
+            )
+            return False
         logger.warning(
-            "DELETE PAYMENT MESSAGE FAILED",
+            "DELETE PAYMENT MESSAGE FAILED | chat=%s | message=%s",
+            chat_id,
+            message_id,
             exc_info=True,
         )
+        return False
+    except Exception:
+        logger.warning(
+            "DELETE PAYMENT MESSAGE FAILED | chat=%s | message=%s",
+            chat_id,
+            message_id,
+            exc_info=True,
+        )
+        return False
+# ============================================================
+# PAYMENT LOADING UI
+# ============================================================
+def payment_loading_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="⏳ Memproses pembayaran...",
+                    callback_data="none",
+                )
+            ]
+        ]
+    )
+
+
+async def show_payment_loading(
+    call: CallbackQuery,
+    text: str = "⏳ Memproses pembayaran...",
+):
+    """Give instant visual feedback before slow DB/API operations."""
+    try:
+        await call.answer(text)
+    except Exception:
+        pass
+    try:
+        await call.message.edit_reply_markup(
+            reply_markup=payment_loading_keyboard()
+        )
+    except Exception:
+        # Some source messages (photo/media/etc.) may not be editable.
+        pass
+
+
 # ============================================================
 # PAYMENT KEYBOARD
 # ============================================================
@@ -729,8 +785,9 @@ def payment_method_keyboard(
 async def choose_payment(
     call: CallbackQuery,
 ):
-    await call.answer(
-        "⏳ Menyiapkan pembayaran..."
+    await show_payment_loading(
+        call,
+        "⏳ Menyiapkan pembayaran...",
     )
     try:
         code = call.data.split(
@@ -870,8 +927,9 @@ async def buy_payment_alias(
 async def cashi_payment(
     call: CallbackQuery,
 ):
-    await call.answer(
-        "⏳ Menyiapkan Cashi..."
+    await show_payment_loading(
+        call,
+        "⏳ Menyiapkan Cashi...",
     )
     if not AUTO_PAYMENT_ENABLED:
         return await call.message.answer(
@@ -917,8 +975,9 @@ async def cashi_payment(
 async def manual_payment(
     call: CallbackQuery,
 ):
-    await call.answer(
-        "⏳ Menyiapkan QR manual..."
+    await show_payment_loading(
+        call,
+        "⏳ Menyiapkan QR manual...",
     )
     if not MANUAL_PAYMENT_ENABLED:
         return await call.message.answer(
@@ -964,16 +1023,25 @@ async def get_or_create_purchase(
     file,
     payment_prefix: str,
 ):
-    paid = await get_paid_purchase(
-        user_id,
-        code,
-    )
+    """Return one active purchase, creating it atomically when necessary.
+
+    The UNIQUE(user_id, file_code) constraint is intentional. Two fast
+    callbacks can reach this function at the same time, so a read-then-
+    INSERT sequence is not safe. INSERT ... ON CONFLICT makes the operation
+    idempotent and prevents the duplicate-key error seen in production.
+    """
+    user_id = int(user_id)
+    code = str(code or "").strip()
+    payment_prefix = str(payment_prefix or "").strip()
+
+    paid = await get_paid_purchase(user_id, code)
     if paid:
         return {
             "purchase": paid,
             "already_paid": True,
             "existing": True,
         }
+
     existing = await get_active_method_purchase(
         user_id,
         code,
@@ -985,12 +1053,17 @@ async def get_or_create_purchase(
             "already_paid": False,
             "existing": True,
         }
+
     payment_id = (
         f"{payment_prefix}"
         f"{user_id}-"
         f"{secrets.token_hex(8)}"
     )
+
     try:
+        # IMPORTANT:
+        # file_purchases has UNIQUE(user_id, file_code), therefore two
+        # simultaneous callbacks must never be allowed to raise an error.
         purchase = await fetchrow(
             """
             INSERT INTO file_purchases
@@ -1029,26 +1102,25 @@ async def get_or_create_purchase(
                 NULL,
                 NULL
             )
+            ON CONFLICT (user_id, file_code)
+            DO NOTHING
             RETURNING *
             """,
-            int(user_id),
-            str(code).strip(),
+            user_id,
+            code,
             file.get("owner_id"),
             safe_int(file.get("price")),
             payment_id,
         )
-    except Exception as exc:
+    except Exception:
         logger.exception(
-            (
-                "CREATE PURCHASE ERROR "
-                "| user=%s | code=%s | method=%s"
-            ),
+            "CREATE PURCHASE DB ERROR | user=%s | code=%s | method=%s",
             user_id,
             code,
             payment_prefix,
         )
-        # Race: request lain mungkin baru saja membuat
-        # transaksi method yang sama.
+        # Never create another payment after an unexpected DB error.
+        # Re-read the existing transaction before reporting failure.
         existing = await get_active_method_purchase(
             user_id,
             code,
@@ -1060,10 +1132,7 @@ async def get_or_create_purchase(
                 "already_paid": False,
                 "existing": True,
             }
-        paid = await get_paid_purchase(
-            user_id,
-            code,
-        )
+        paid = await get_paid_purchase(user_id, code)
         if paid:
             return {
                 "purchase": paid,
@@ -1071,13 +1140,160 @@ async def get_or_create_purchase(
                 "existing": True,
             }
         return None
-    if not purchase:
-        return None
-    return {
-        "purchase": purchase,
-        "already_paid": False,
-        "existing": False,
-    }
+
+    if purchase:
+        logger.info(
+            "PURCHASE CREATED | id=%s | user=%s | code=%s | method=%s",
+            purchase.get("id"),
+            user_id,
+            code,
+            payment_prefix,
+        )
+        return {
+            "purchase": purchase,
+            "already_paid": False,
+            "existing": False,
+        }
+
+    # ON CONFLICT DO NOTHING means another request already owns the
+    # unique (user_id, file_code) row. Fetch it instead of attempting
+    # another INSERT.
+    paid = await get_paid_purchase(user_id, code)
+    if paid:
+        return {
+            "purchase": paid,
+            "already_paid": True,
+            "existing": True,
+        }
+
+    # Because the database intentionally has UNIQUE(user_id, file_code),
+    # there can only be one active purchase row for a user/file. If another
+    # callback created it first, reuse that row regardless of its method.
+    active_any = await fetchrow(
+        """
+        SELECT *
+        FROM file_purchases
+        WHERE user_id=$1
+          AND file_code=$2
+          AND status IN ('pending','verifying')
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        user_id,
+        code,
+    )
+    if active_any:
+        logger.info(
+            "PURCHASE REUSED AFTER CONFLICT | id=%s | user=%s | code=%s | method=%s",
+            active_any.get("id"),
+            user_id,
+            code,
+            purchase_method(active_any),
+        )
+        return {
+            "purchase": active_any,
+            "already_paid": False,
+            "existing": True,
+        }
+
+    # The unique row exists, but it is not active for this payment method.
+    # This can happen when an old row is failed/expired/rejected. Do not
+    # blindly INSERT because the unique constraint still protects the pair.
+    row = await fetchrow(
+        """
+        SELECT *
+        FROM file_purchases
+        WHERE user_id=$1
+          AND file_code=$2
+        ORDER BY
+            CASE
+                WHEN status='paid' THEN 0
+                WHEN status IN ('pending','verifying') THEN 1
+                ELSE 2
+            END,
+            id DESC
+        LIMIT 1
+        """,
+        user_id,
+        code,
+    )
+    if row:
+        status = normalize_status(row.get("status"))
+        if status in REUSABLE_PURCHASE_STATUSES:
+            try:
+                reused = await fetchrow(
+                    """
+                    UPDATE file_purchases
+                    SET
+                        owner_id=$1,
+                        paid_price=$2,
+                        payment_id=$3,
+                        status='pending',
+                        created_at=NOW(),
+                        paid_at=NULL,
+                        qr_image=NULL,
+                        payment_url=NULL,
+                        expires_at=NULL,
+                        qr_message_id=NULL,
+                        qr_chat_id=NULL,
+                        media_session_id=NULL,
+                        gateway_order_id=NULL
+                    WHERE id=$4
+                      AND user_id=$5
+                      AND file_code=$6
+                      AND status IN (
+                          'failed',
+                          'rejected',
+                          'expired',
+                          'cancel',
+                          'cancelled',
+                          'canceled'
+                      )
+                    RETURNING *
+                    """,
+                    file.get("owner_id"),
+                    safe_int(file.get("price")),
+                    payment_id,
+                    row["id"],
+                    user_id,
+                    code,
+                )
+                if reused:
+                    logger.info(
+                        "PURCHASE REACTIVATED | id=%s | user=%s | code=%s | method=%s",
+                        reused.get("id"),
+                        user_id,
+                        code,
+                        payment_prefix,
+                    )
+                    return {
+                        "purchase": reused,
+                        "already_paid": False,
+                        "existing": False,
+                    }
+            except Exception:
+                logger.exception(
+                    "REACTIVATE PURCHASE ERROR | id=%s | user=%s | code=%s",
+                    row.get("id"),
+                    user_id,
+                    code,
+                )
+
+        if status == "paid":
+            return {
+                "purchase": row,
+                "already_paid": True,
+                "existing": True,
+            }
+
+    logger.error(
+        "PURCHASE CONFLICT UNRESOLVED | user=%s | code=%s | method=%s",
+        user_id,
+        code,
+        payment_prefix,
+    )
+    return None
+
 # ============================================================
 # CASHI HEADERS
 # ============================================================
@@ -1911,6 +2127,28 @@ async def create_cashi_payment(
         return await call.message.answer(
             "✅ Kamu sudah membeli file ini."
         )
+    if result.get("existing"):
+        existing_method = purchase_method(purchase)
+        if existing_method == "manual":
+            return await show_existing_manual(
+                call,
+                purchase,
+                file,
+            )
+        if existing_method == "cashi":
+            return await show_existing_cashi(
+                call,
+                purchase,
+                file,
+            )
+        logger.warning(
+            "UNKNOWN EXISTING PAYMENT METHOD | purchase=%s | payment_id=%s",
+            purchase.get("id"),
+            purchase.get("payment_id"),
+        )
+        return await call.message.answer(
+            "⚠️ Transaksi pembayaran sudah ada. Silakan gunakan transaksi tersebut."
+        )
     payment_id = str(
         purchase.get("payment_id")
         or ""
@@ -1921,9 +2159,14 @@ async def create_cashi_payment(
         return await call.message.answer(
             "❌ ID transaksi Cashi tidak valid."
         )
-    await call.answer(
-        "⏳ Membuat pembayaran Cashi..."
-    )
+    # Loading state was shown immediately by the callback entry handler.
+    # Keep the original message disabled while the gateway request runs.
+    try:
+        await call.message.edit_reply_markup(
+            reply_markup=payment_loading_keyboard()
+        )
+    except Exception:
+        pass
     # --------------------------------------------------------
     # CREATE CASHI
     # --------------------------------------------------------
@@ -2224,6 +2467,28 @@ async def create_manual_payment(
     ):
         return await call.message.answer(
             "✅ Kamu sudah membeli file ini."
+        )
+    if result.get("existing"):
+        existing_method = purchase_method(purchase)
+        if existing_method == "cashi":
+            return await show_existing_cashi(
+                call,
+                purchase,
+                file,
+            )
+        if existing_method == "manual":
+            return await show_existing_manual(
+                call,
+                purchase,
+                file,
+            )
+        logger.warning(
+            "UNKNOWN EXISTING PAYMENT METHOD | purchase=%s | payment_id=%s",
+            purchase.get("id"),
+            purchase.get("payment_id"),
+        )
+        return await call.message.answer(
+            "⚠️ Transaksi pembayaran sudah ada. Silakan gunakan transaksi tersebut."
         )
     return await send_manual_payment(
         call,
