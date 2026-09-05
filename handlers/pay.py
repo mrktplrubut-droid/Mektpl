@@ -20,6 +20,7 @@ from aiogram.types import (
     Message,
 )
 from database import fetchrow, fetch, execute
+from utils.media_sender import safe_copy_from_storage
 from utils.redis_client import safe_set, safe_get
 from utils.cashi import Cashi
 from config import (
@@ -4224,13 +4225,13 @@ async def send_page_media(
             )
             if not message_id:
                 continue
-            await call.bot.copy_message(
-                chat_id=call.from_user.id,
-                from_chat_id=STORAGE_CHANNEL_ID,
-                message_id=int(
-                    message_id
-                ),
+            copied = await safe_copy_from_storage(
+                call.bot,
+                call.from_user.id,
+                message_id,
             )
+            if copied is None:
+                continue
             sent += 1
         except Exception:
             logger.exception(
@@ -4301,13 +4302,13 @@ async def send_all_media(
             )
             if not message_id:
                 continue
-            await call.bot.copy_message(
-                chat_id=call.from_user.id,
-                from_chat_id=STORAGE_CHANNEL_ID,
-                message_id=int(
-                    message_id
-                ),
+            copied = await safe_copy_from_storage(
+                call.bot,
+                call.from_user.id,
+                message_id,
             )
+            if copied is None:
+                continue
             sent += 1
             if (
                 index % 5 == 0
