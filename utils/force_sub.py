@@ -5,12 +5,12 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 CHANNELS = [
     {
         "id": -1003978483597,
-        "name": "Channel Utama",
+        "name": "Channel Update",
         "url": "https://t.me/+CUAmQ49VFMw1MmRh",
     },
     {
         "id": -1004413314849,
-        "name": "Channel Update",
+        "name": "Saluran Backup",
         "url": "https://t.me/+0ddS3Ha4c2pkNmJl",
     },
 ]
