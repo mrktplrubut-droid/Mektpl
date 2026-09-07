@@ -1,32 +1,25 @@
-"""
-Global callback loading feedback.
-
-Every inline callback is acknowledged immediately so Telegram never looks
-frozen while DB/API work is running.  The actual handler remains responsible
-for its final result.
-"""
+"""Global callback loading feedback for every inline callback button."""
 from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery
 
-
 def loading_text(data: str | None) -> str:
     value = (data or "").lower()
-    if value.startswith(("page:", "all:", "freeopen:", "freeshare:")):
-        return "📂 Memuat file..."
-    if value.startswith(("pay:", "premium_buy:", "vvip")):
-        return "💳 Memproses..."
-    if value.startswith(("market", "top_", "category_", "search")):
-        return "🛍️ Memuat marketplace..."
+    if value.startswith(("page:", "all:", "allnext:", "freeopen:", "freeshare:", "sharecheck:")):
+        return "⏳ Memuat media..."
+    if value.startswith(("pay:", "premium_buy:", "vvip", "manual:", "cashi:", "paymentcheck:")):
+        return "⏳ Memproses pembayaran..."
+    if value.startswith(("market", "top_", "category_", "search", "favorite:", "rating:", "rate:", "like:", "dislike:")):
+        return "⏳ Memuat..."
     if value.startswith(("account", "creator", "withdraw", "ewallet")):
-        return "👤 Memuat akun..."
+        return "⏳ Memuat akun..."
     if value.startswith(("upfile", "getfile")):
-        return "📦 Menyiapkan..."
+        return "⏳ Menyiapkan..."
     if value.startswith("admin"):
-        return "🛠️ Memuat panel admin..."
+        return "⏳ Memuat panel admin..."
     return "⏳ Memproses..."
 
-
 class CallbackLoadingMiddleware(BaseMiddleware):
+    """ACK every callback immediately; Telegram displays the native spinner on the pressed button."""
     async def __call__(self, handler, event, data):
         if isinstance(event, CallbackQuery):
             try:
