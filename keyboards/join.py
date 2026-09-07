@@ -17,7 +17,11 @@ def join_kb(bot_username: str | None = None, user_id: int | None = None, lang: s
 
     rows = []
     for idx, channel in enumerate(CHANNELS, 1):
-        name = channel["name"] if lang == "id" else ("Main Channel" if idx == 1 else "Update Channel")
+        name = (
+            "Channel Update" if idx == 1 else "Saluran Backup"
+        ) if lang == "id" else (
+            "Update Channel" if idx == 1 else "Backup Channel"
+        )
         rows.append([InlineKeyboardButton(text=f"📢 {name}", url=channel["url"])])
 
     if share_url:

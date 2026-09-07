@@ -133,50 +133,17 @@ def settings_kb(
 # ============================================================
 # OTHER MENU
 # ============================================================
-def other_menu_kb(
-    lang: str = "id",
-) -> InlineKeyboardMarkup:
+def other_menu_kb(lang: str = "id") -> InlineKeyboardMarkup:
     idn = lang == "id"
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                _button("🏆 Top 10 Code" if idn else "🏆 Top 10 Code", callback_data="top_code"),
-                _button("📦 Code Saya" if idn else "📦 My Code", callback_data="my_code"),
-            ],
-            [
-                _button("❤️ Favorit Terpopuler" if idn else "❤️ Most Favorited", callback_data="market_favorite"),
-                _button("🛍️ Marketplace" if idn else "🛍️ Marketplace", callback_data="marketplace"),
-            ],
-            [
-                _button("🎨 Kreator" if idn else "🎨 Creator", callback_data="creator"),
-                _button("💎 Upgrade Premium" if idn else "💎 Premium", callback_data="vvip"),
-            ],
-            [
-                _button("💸 Withdraw" if idn else "💸 Withdraw", callback_data="withdraw"),
-                _button("💳 Metode Withdraw" if idn else "💳 Withdraw Method", callback_data="ewallet"),
-            ],
-            [
-                _button("📤 Upload Code" if idn else "📤 Upload Code", callback_data="upfile"),
-                _button("📥 Ambil File" if idn else "📥 Get File", callback_data="getfile"),
-            ],
-            [
-                _button("⭐ Channel Review" if idn else "⭐ Review Channel", callback_data="channel_review"),
-            ],
-            [
-                _button("🔔 Channel Notifikasi" if idn else "🔔 Notification Channel", callback_data="channel_notification"),
-            ],
-            [
-                _button("💳 Channel Transaksi" if idn else "💳 Transaction Channel", callback_data="channel_transaction"),
-            ],
-            [
-                _button("📦 Kumpulkan Semua Code" if idn else "📦 Collect All Codes", callback_data="collect_all_codes"),
-            ],
-            [
-                _button("❓ Bantuan" if idn else "❓ Help", callback_data="help"),
-                _button("🌐 Bahasa" if idn else "🌐 Language", callback_data="change_language"),
-            ],
-            [
-                _button("⬅️ Kembali" if idn else "⬅️ Back", callback_data="home"),
-            ],
-        ]
-    )
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_button("📤 Share Code" if idn else "📤 Share Code", callback_data="share_code")],
+        [_button("📦 Code Saya" if idn else "📦 My Code", callback_data="my_code")],
+        [_button("🌐 Pilih Bahasa" if idn else "🌐 Language", callback_data="change_language")],
+        [_button("🏦 Metode Bank" if idn else "🏦 Bank Method", callback_data="ewallet")],
+        [_button("💸 Withdraw" if idn else "💸 Withdraw", callback_data="withdraw")],
+        [_button("⭐ Channel Review" if idn else "⭐ Review Channel", callback_data="channel_review")],
+        [_button("💳 Channel Transaksi" if idn else "💳 Transaction Channel", callback_data="channel_transaction")],
+        [_button("🔔 Channel Notifikasi" if idn else "🔔 Notification Channel", callback_data="channel_notification")],
+        [_button("❓ Help / Bantuan" if idn else "❓ Help", callback_data="help")],
+        [_button("⬅️ Kembali" if idn else "⬅️ Back", callback_data="home")],
+    ])
