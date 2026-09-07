@@ -1,23 +1,36 @@
 """
 Global callback loading feedback.
 
-Shows an immediate Telegram callback toast before the actual handler starts,
-so database/API operations do not look like a frozen button.
+Every inline callback is acknowledged immediately so Telegram never looks
+frozen while DB/API work is running.  The actual handler remains responsible
+for its final result.
 """
 from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery
 
 
-class CallbackLoadingMiddleware(BaseMiddleware):
-    def __init__(self, text: str = "⏳ Memproses..."):
-        self.text = text
+def loading_text(data: str | None) -> str:
+    value = (data or "").lower()
+    if value.startswith(("page:", "all:", "freeopen:", "freeshare:")):
+        return "📂 Memuat file..."
+    if value.startswith(("pay:", "premium_buy:", "vvip")):
+        return "💳 Memproses..."
+    if value.startswith(("market", "top_", "category_", "search")):
+        return "🛍️ Memuat marketplace..."
+    if value.startswith(("account", "creator", "withdraw", "ewallet")):
+        return "👤 Memuat akun..."
+    if value.startswith(("upfile", "getfile")):
+        return "📦 Menyiapkan..."
+    if value.startswith("admin"):
+        return "🛠️ Memuat panel admin..."
+    return "⏳ Memproses..."
 
+
+class CallbackLoadingMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
         if isinstance(event, CallbackQuery):
             try:
-                await event.answer(self.text, show_alert=False)
+                await event.answer(loading_text(event.data), show_alert=False)
             except Exception:
-                # The real handler is still allowed to run if the callback
-                # has already been acknowledged/expired.
                 pass
         return await handler(event, data)
