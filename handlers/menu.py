@@ -87,3 +87,42 @@ async def back_home(callback: CallbackQuery):
     creator=bool(row and row["is_creator"] and row["creator_status"]=="approved")
     await callback.message.edit_text("🏠 <b>MENU UTAMA</b>" if lang=="id" else "🏠 <b>MAIN MENU</b>",parse_mode="HTML",reply_markup=home_kb(callback.from_user.id,lang,creator))
     await callback.answer()
+
+@router.callback_query(F.data == "share_code")
+async def share_code_menu(callback: CallbackQuery):
+    """List the user's codes with Telegram share links."""
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    from utils.share_unlock import share_url
+    pool = await get_pool()
+    lang = await lang_for(callback.from_user.id)
+    rows = await pool.fetch(
+        """SELECT code,title,media_count,is_paid
+           FROM files WHERE owner_id=$1 ORDER BY id DESC LIMIT 20""",
+        callback.from_user.id,
+    )
+    if not rows:
+        return await callback.answer(
+            "❌ Belum ada code." if lang == "id" else "❌ No codes yet.",
+            show_alert=True,
+        )
+    me = await callback.bot.get_me()
+    buttons = []
+    for r in rows:
+        url = share_url(
+            me.username, r["code"], callback.from_user.id,
+            str(r["title"] or r["code"])
+        )
+        label = f"📤 {r['code']} • {int(r['media_count'] or 0)} media"
+        buttons.append([InlineKeyboardButton(text=label, url=url)])
+    buttons.append([InlineKeyboardButton(
+        text="⬅️ Kembali" if lang == "id" else "⬅️ Back",
+        callback_data="menu_lainnya"
+    )])
+    await callback.message.edit_text(
+        "📤 <b>SHARE CODE</b>\n\n"
+        + ("Bagikan code agar progres unlock bertambah saat member baru membuka bot."
+           if lang == "id" else
+           "Share a code to build unlock progress when new members open the bot."),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+    )

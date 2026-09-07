@@ -70,7 +70,7 @@ async def start_cmd(
             user_id,
             username,
             state=state,
-            force_language=True,
+            force_language=False,
             start_arg=payload,
             from_user=message.from_user
         )
@@ -195,8 +195,8 @@ async def process_start(
                 user_id, start_arg,
             )
 
-    # Always show language selection from /start.
-    # Existing language is only used after the user confirms it.
+    # Language is selected once; /start reuses the saved language.
+    # The selector is shown only when no language has been saved (or when explicitly forced).
     current_lang = await pool.fetchval(
         "SELECT language FROM users WHERE user_id=$1",
         user_id

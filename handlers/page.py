@@ -93,316 +93,132 @@ def build_reaction_buttons(code):
 # =========================
 
 async def send_page(bot, chat_id, user_id, code, page=1):
-
     pool = await get_pool()
-
-    file = await pool.fetchrow(
-        """
-        SELECT *
-        FROM files
-        WHERE code=$1
-        LIMIT 1
-        """,
-        code
-    )
-
+    file = await pool.fetchrow("SELECT * FROM files WHERE code=$1 LIMIT 1", code)
     if not file:
-        print("FILE NOT FOUND")
         return False
 
+    from utils.user import get_user_status
+    user_level = await get_user_status(pool, user_id)
 
-    # =========================
-    # AKSES + VIEW REAL DATABASE
-    # =========================
+    media = file["media"]
+    if isinstance(media, str):
+        try:
+            media = json.loads(media)
+        except Exception:
+            return False
+    if not isinstance(media, list) or not media:
+        return False
+
     creator_access = await pool.fetchval(
-        """
-        SELECT COALESCE(is_creator, FALSE)
-               AND COALESCE(creator_status, 'none') = 'approved'
-        FROM users WHERE user_id=$1
-        """, user_id
-    ) or False
-    owner_access = (file["owner_id"] == user_id)
+        """SELECT COALESCE(is_creator,FALSE) AND COALESCE(creator_status,'none')='approved'
+           FROM users WHERE user_id=$1""", user_id) or False
+    owner_access = int(file["owner_id"] or 0) == int(user_id)
     purchase_access = await pool.fetchval(
         """SELECT EXISTS(SELECT 1 FROM file_purchases
            WHERE user_id=$1 AND file_code=$2 AND status='paid')""",
-        user_id, code
-    ) or False
+        user_id, code) or False
     free_access = await pool.fetchval(
         """SELECT EXISTS(SELECT 1 FROM free_code_progress
            WHERE user_id=$1 AND code=$2 AND completed=TRUE)""",
-        user_id, code
-    ) or False
+        user_id, code) or False
+    privileged = bool(owner_access or purchase_access or creator_access or free_access or
+                      user_level in ("vip", "vvip"))
 
+    share_current, share_target, share_completed = await get_share_status(
+        pool, code, user_id, is_paid=bool(file["is_paid"]), media_count=len(media))
+    if not privileged and not share_completed:
+        await ensure_share_progress(pool, code, user_id,
+                                    is_paid=bool(file["is_paid"]), media_count=len(media))
+        text, kb = await gate_message(
+            bot, chat_id, code=code, title=str(file["title"] or code),
+            progress=share_current, target=share_target,
+            is_paid=bool(file["is_paid"]))
+        await bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=kb)
+        return False
+
+    total_pages = max(1, (len(media) + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = max(1, min(int(page), total_pages))
+    start = (page - 1) * PAGE_SIZE
+    chunk = media[start:start + PAGE_SIZE]
+
+    # Unique view only on first page.
     if page == 1:
         viewed = await pool.fetchrow(
             """INSERT INTO file_views(user_id,file_code) VALUES($1,$2)
                ON CONFLICT(user_id,file_code) DO NOTHING RETURNING user_id""",
-            user_id, code
-        )
+            user_id, code)
         if viewed:
             await pool.execute(
                 """UPDATE files SET views=COALESCE(views,0)+1,
-                   view_count=COALESCE(view_count,0)+1 WHERE code=$1""", code
-            )
-
-
-    # =========================
-    # MEDIA
-    # =========================
-
-    media = file["media"]
-
-    if isinstance(media, str):
-
-        try:
-            media = json.loads(media)
-
-        except Exception as e:
-
-            print("MEDIA JSON ERROR", e)
-
-            return False
-
-
-    if not media:
-
-        print("MEDIA EMPTY")
-
-        return False
-
-    # SHARE-TO-UNLOCK GATE.
-    # Owner, purchase, creator and VIP/VVIP bypass the gate.
-    privileged = bool(
-        owner_access
-        or purchase_access
-        or creator_access
-        or user_level in ("vip", "vvip")
-    )
-    share_current, share_target, share_completed = await get_share_status(
-        pool, code, user_id,
-        is_paid=bool(file["is_paid"]),
-        media_count=len(media),
-    )
-    if not privileged and not share_completed:
-        await ensure_share_progress(
-            pool, code, user_id,
-            is_paid=bool(file["is_paid"]),
-            media_count=len(media),
-        )
-        text, kb = await gate_message(
-            bot, chat_id,
-            code=code,
-            title=str(file["title"] or code),
-            progress=share_current,
-            target=share_target,
-            is_paid=bool(file["is_paid"]),
-        )
-        await bot.send_message(
-            chat_id, text, parse_mode="HTML", reply_markup=kb
-        )
-        return False
-
-    total_page = (
-        len(media) + PAGE_SIZE - 1
-    ) // PAGE_SIZE
-
-
-    page = max(
-        1,
-        min(page, total_page)
-    )
-
-
-    start = (page - 1) * PAGE_SIZE
-    end = start + PAGE_SIZE
-
-    chunk = media[start:end]
-
+                   view_count=COALESCE(view_count,0)+1 WHERE code=$1""", code)
 
     share_media = file["share_media"]
+    protect = not bool(True if share_media is None else share_media)
 
-    if share_media is None:
-        share_media = True
-
-
-    protect = not share_media
-
-
-    caption = (
-        "botmarketRobot\n"
-        "━━━━━━━━━━━━━━━\n\n"
-        f"🔑 CODE : {code}\n"
-        f"📦 PAGE : {page}/{total_page}\n"
-        f"📊 TOTAL : {len(media)} FILE"
-    )
-
-
-    # =========================
-    # BUILD ALBUM
-    # =========================
-
+    # Album = max 10 Telegram media. This is intentionally one album per page.
     album = []
-
-
-    for index, item in enumerate(chunk):
-
-        if not isinstance(item, dict):
+    caption = (
+        f"🔑 <b>CODE:</b> <code>{code}</code>\n"
+        f"🤖 <b>BOT:</b> @{(await bot.get_me()).username or 'bot'}\n"
+        f"📦 <b>MEDIA:</b> {start + 1}-{start + len(chunk)} / {len(media)}\n"
+        f"📄 <b>PAGE:</b> {page}/{total_pages}"
+    )
+    for idx, item in enumerate(chunk):
+        if not isinstance(item, dict) or not item.get("file_id"):
             continue
-
-
-        file_id = item.get("file_id")
-
-        if not file_id:
-            continue
-
-
-        media_type = (
-            item.get("type")
-            or "document"
-        ).lower()
-
-
-        cap = caption if index == 0 else None
-
-
-        if media_type == "photo":
-
-            album.append(
-                InputMediaPhoto(
-                    media=file_id,
-                    caption=cap
-                )
-            )
-
-
-        elif media_type == "video":
-
-            album.append(
-                InputMediaVideo(
-                    media=file_id,
-                    caption=cap
-                )
-            )
-
-
+        fid = item["file_id"]
+        typ = normalize_type(item.get("type"))
+        cap = caption if not album else None
+        if typ == "photo":
+            album.append(InputMediaPhoto(media=fid, caption=cap))
+        elif typ == "video":
+            album.append(InputMediaVideo(media=fid, caption=cap))
         else:
-
-            album.append(
-                InputMediaDocument(
-                    media=file_id,
-                    caption=cap
-                )
-            )
-
-
+            album.append(InputMediaDocument(media=fid, caption=cap))
     if not album:
-
-        print("ALBUM EMPTY")
-
         return False
 
-
-    # =========================
-    # SEND MEDIA - SEQUENTIAL
-    # =========================
-    # Do not use send_media_group here: it sends up to 10 media in one burst.
-    # Each item is sent separately with a 3-second interval.
-    sent_count = 0
     try:
-        for item in chunk:
-            file_id = item.get("file_id") if isinstance(item, dict) else None
-            if not file_id:
-                continue
-
-            media_type = normalize_type(item.get("type"))
-            if media_type == "photo":
-                await bot.send_photo(
-                    chat_id, file_id,
-                    caption=caption if sent_count == 0 else None,
-                    protect_content=protect,
-                )
-            elif media_type == "video":
-                await bot.send_video(
-                    chat_id, file_id,
-                    caption=caption if sent_count == 0 else None,
-                    protect_content=protect,
-                )
-            else:
-                await bot.send_document(
-                    chat_id, file_id,
-                    caption=caption if sent_count == 0 else None,
-                    protect_content=protect,
-                )
-
-            sent_count += 1
-            if sent_count < len(chunk):
-                await asyncio.sleep(3.0)
-
-        if sent_count == 0:
-            return False
-
-        if protect:
-            await bot.send_message(chat_id, "🔒 File dilindungi")
-
+        await bot.send_media_group(chat_id=chat_id, media=album, protect_content=protect)
     except TelegramRetryAfter as exc:
-        wait_for = max(float(exc.retry_after), 1.0) + 0.5
-        await asyncio.sleep(wait_for)
-        # Do not replay the whole page after a flood response.
-        return sent_count > 0
-    except Exception as e:
-        print("SEND MEDIA ERROR", e)
-        return sent_count > 0
+        await asyncio.sleep(max(float(exc.retry_after), 1.0) + 0.5)
+        return False
+    except Exception:
+        return False
 
-    # =========================
-    # NAVIGATION
-    # =========================
-
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            build_page_buttons(
-                code,
-                page,
-                total_page
-            ),
-
-            [
-                InlineKeyboardButton(
-                    text="📤 OPEN ALL",
-                    callback_data=f"all:{code}"
-                )
-            ],
-
-            # ❤️ FAVORITE + ⭐ RATING
-            *build_reaction_buttons(code)
-
-        ]
-    )
-
-
-    nav = await bot.send_message(
+    # Compact status bubble: e.g. 1/4 for a 40-media code.
+    status = await bot.send_message(
         chat_id,
-        (
-            f"📦 PAGE {page}/{total_page}\n"
-            f"✅ {sent_count}/{len(chunk)} Media\n\n"
-            "❤️ Simpan ke favorit atau ⭐ berikan rating"
-        ),
-        reply_markup=keyboard
+        f"📦 <b>{page}/{total_pages}</b> media page • "
+        f"<b>{len(album)}/{len(chunk)}</b> terkirim • Total <b>{len(media)}</b>",
+        parse_mode="HTML",
     )
 
+    # Navigation is deliberately not auto-advanced. The next page requires a
+    # button press and the handler enforces a 5-second cooldown.
+    keyboard = [
+        build_page_buttons(code, page, total_pages),
+        [
+            InlineKeyboardButton(text="👍 Like", callback_data=f"like:{code}"),
+            InlineKeyboardButton(text="👎 No Like", callback_data=f"dislike:{code}"),
+        ],
+        [
+            InlineKeyboardButton(text="❤️ Favorit", callback_data=f"favorite:{code}"),
+            InlineKeyboardButton(text="⭐ Rating", callback_data=f"rating:{code}"),
+        ],
+        [
+            InlineKeyboardButton(text="🛍️ Marketplace", callback_data="marketplace"),
+            InlineKeyboardButton(text="🔍 Cari Code", callback_data="search_code"),
+        ],
+        [InlineKeyboardButton(text="📤 Send All", callback_data=f"all:{code}")],
+    ]
+    try:
+        await status.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    except Exception:
+        pass
 
-    NAV_CACHE[
-        (user_id, code)
-    ] = nav.message_id
-
-
-    print(
-        "PAGE SENT",
-        code,
-        page,
-        len(album)
-    )
-
-
+    NAV_CACHE[(user_id, code)] = status.message_id
     return True
 
 
@@ -508,6 +324,18 @@ async def page_handler(call: CallbackQuery):
 
 
     async with USER_LOCK[user_id]:
+
+        # Minimum 5 seconds between page requests for the same code.
+        nav_key = (user_id, code)
+        now = time.time()
+        last = PAGE_CHANGE.get(nav_key, 0.0)
+        if last and now - last < 5.0:
+            remaining = 5.0 - (now - last)
+            return await call.answer(
+                f"⏳ Tunggu {remaining:.1f} detik sebelum membuka page berikutnya.",
+                show_alert=True,
+            )
+        PAGE_CHANGE[nav_key] = now
 
         # =========================
         # HAPUS NAV LAMA
