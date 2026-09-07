@@ -1,20 +1,16 @@
-# PasTele safety / share unlock patch
+# Mektpl Final — Telegram UX / Safe Delivery Patch
 
-## Runtime changes
-- Every inline callback receives immediate loading feedback via `middlewares/loading.py`.
-- Home buttons are grouped as: Upfile/Getfile, Marketplace/Account, VIP/Creator/More Menu.
-- SEND ALL is sequential with a configurable default 3-second interval between media.
-- SEND PAGE is also sequential (no 10-item burst via `send_media_group`).
-- Storage copy is serialized and uses a conservative 1-second default delay plus Telegram RetryAfter.
-- Invalid destination chats are remembered in-process to stop repeated `chat not found` floods.
-- Upload update-channel messages are serialized and rate-limited.
-- Share-unlock progress is unique per code/owner/new-member and cannot be inflated by refreshes.
-- FREE target = ceil(media_count / 5): 10 media => 2, 20 media => 4.
-- PAID target = 10 genuinely new members.
-- Paid purchases, owners, verified creators, and VIP/VVIP retain direct access.
-- Admin Settings now contains Telegram Safety and Share Unlock monitoring.
-
-## Database
-Run `MIGRATION_SHARE_UNLOCK_TELEGRAM_SAFETY.sql` on existing Supabase databases. The bot's `database.py` also creates the tables/settings on startup.
-
-Telegram rate limits can never be guaranteed away; the implementation deliberately avoids bursts and honors Telegram RetryAfter responses.
+- Global callback loading feedback for every inline callback button.
+- Force join labels: Channel Update + Saluran Backup.
+- /start remembers selected language; selector is not repeated unless language is changed.
+- Send Page: max 10 media per Telegram album, compact 1/4 style status for 40 media, 5-second navigation cooldown.
+- Send Page result controls: Like, No Like, Favorit, Rating, Marketplace, Cari Code.
+- Send All: batches of 10, 3-second pacing between media, manual Lanjut Kirim / Stop Kirim.
+- Send All includes compact CODE/BOT/Media N/N header for each media.
+- Send All final controls: Like, No Like, Favorit, Rating, Marketplace, Cari Code.
+- Share Code menu added.
+- FREE share unlock remains ceil(media_count / 5): 10 media=2, 20 media=4.
+- PAID share unlock remains 10 new members.
+- Withdraw fees: Regular Rp10.000; Instant Rp15.000.
+- Existing Telegram RetryAfter handling and storage flood protection retained.
+- Telegram native callback spinner is used instead of risky keyboard mutation, avoiding edit races.

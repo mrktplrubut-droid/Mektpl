@@ -70,6 +70,7 @@ from handlers.start import router as start_router
 from handlers.check_sub import router as check_sub_router
 from handlers.page import router as page_router
 from handlers.open_menu import router as open_menu_router
+from handlers.sendall import router as sendall_router
 from handlers.menu import router as menu_router
 # FILE SYSTEM
 from handlers.upfile import router as upfile_router
@@ -137,6 +138,7 @@ dp.include_router(upfile_router)
 dp.include_router(getfile_router)
 dp.include_router(page_router)
 dp.include_router(open_menu_router)
+dp.include_router(sendall_router)
 # ------------------------------------------------------------
 # STORE
 # ------------------------------------------------------------
