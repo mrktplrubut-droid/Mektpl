@@ -9,12 +9,16 @@ from aiogram.exceptions import (
 )
 
 from config import STORAGE_CHANNEL_ID
+from database import get_pool
 
 logger = logging.getLogger(__name__)
 
 # Keep concurrent CopyMessage calls low. RetryAfter remains the authority.
-_COPY_SEMAPHORE = asyncio.Semaphore(2)
-_COPY_DELAY = 0.20
+# One outbound storage copy at a time. TelegramRetryAfter remains authoritative.
+_COPY_SEMAPHORE = asyncio.Semaphore(1)
+_COPY_DELAY = 1.0
+_BLOCKED_CHATS: set[int] = set()
+
 
 
 async def safe_copy_from_storage(
@@ -38,6 +42,17 @@ async def safe_copy_from_storage(
 
     retries = 0
 
+    try:
+        chat_key = int(chat_id)
+    except (TypeError, ValueError):
+        return None
+
+    # A known-invalid destination must not generate hundreds of identical
+    # Telegram requests/log lines during a batch.
+    if chat_key in _BLOCKED_CHATS:
+        logger.info("COPY SKIPPED INVALID CHAT | chat=%s | message=%s", chat_id, message_id)
+        return None
+
     async with _COPY_SEMAPHORE:
         while True:
             try:
@@ -47,8 +62,19 @@ async def safe_copy_from_storage(
                     message_id=message_id,
                     protect_content=protect_content,
                 )
-                if delay > 0:
-                    await asyncio.sleep(delay)
+                effective_delay = delay
+                if delay == _COPY_DELAY:
+                    try:
+                        pool = await get_pool()
+                        setting = await pool.fetchval(
+                            "SELECT value FROM settings WHERE key=$1",
+                            "telegram_storage_delay",
+                        )
+                        effective_delay = max(0.0, float(setting)) if setting is not None else delay
+                    except Exception:
+                        effective_delay = delay
+                if effective_delay > 0:
+                    await asyncio.sleep(effective_delay)
                 return result
 
             except TelegramRetryAfter as exc:
@@ -67,10 +93,29 @@ async def safe_copy_from_storage(
                 )
                 await asyncio.sleep(wait_for)
 
-            except (TelegramForbiddenError, TelegramBadRequest) as exc:
+            except TelegramForbiddenError as exc:
+                # Bot was blocked or lacks access. Do not hammer this chat again.
+                _BLOCKED_CHATS.add(chat_key)
                 logger.warning(
-                    "COPY PERMANENT ERROR | chat=%s | message=%s | error=%s",
+                    "COPY DESTINATION BLOCKED | chat=%s | message=%s | error=%s",
                     chat_id, message_id, exc,
+                )
+                return None
+
+            except TelegramBadRequest as exc:
+                error = str(exc).lower()
+                permanent = (
+                    "chat not found" in error
+                    or "user is deactivated" in error
+                    or "bot was blocked" in error
+                    or "message to copy not found" in error
+                    or "message not found" in error
+                )
+                if permanent and ("chat not found" in error or "user is deactivated" in error or "bot was blocked" in error):
+                    _BLOCKED_CHATS.add(chat_key)
+                logger.warning(
+                    "COPY PERMANENT ERROR | chat=%s | message=%s | permanent=%s | error=%s",
+                    chat_id, message_id, permanent, exc,
                 )
                 return None
 
