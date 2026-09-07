@@ -5,18 +5,19 @@ from aiogram.types import (
     InlineKeyboardButton
 )
 from database import fetchrow, fetchval, execute, get_pool
+from utils.share_unlock import get_share_status, ensure_share_progress, share_url, gate_message
 router = Router()
 # ============================================================
 # SHARE URL
 # ============================================================
-def share_url_for_code(me, code, title=""):
-    from urllib.parse import quote
-    bot_username = (me.username or "").lstrip("@")
-    return (
-        "https://t.me/share/url?"
-        f"url={quote(f'https://t.me/{bot_username}?start={code}')}"
-        f"&text={quote('🤖 Coba code Telegram dari Marketplace!')}"
+def share_url_for_code(me, code, title="", sharer_id=0):
+    return share_url(
+        me.username,
+        code,
+        sharer_id,
+        title,
     )
+
 # ============================================================
 # MARKETPLACE DETAIL
 # ============================================================
@@ -103,17 +104,12 @@ async def market_detail(call: CallbackQuery):
     # --------------------------------------------------------
     # FREE PROGRESS
     # --------------------------------------------------------
-    progress = int(
-        await fetchval(
-            """
-            SELECT purchase_count
-            FROM free_code_progress
-            WHERE code=$1
-              AND user_id=$2
-            """,
-            code,
-            call.from_user.id
-        ) or 0
+    share_progress, share_target, share_completed = await get_share_status(
+        await get_pool(),
+        code,
+        call.from_user.id,
+        is_paid=bool(file["is_paid"]),
+        media_count=int(file["media_count"] or 0),
     )
     # ========================================================
     # INDONESIAN
@@ -200,12 +196,12 @@ async def market_detail(call: CallbackQuery):
                 callback_data=f"pay:{code}"
             )
         ])
-        if file["free_unlock_enabled"] and progress < 3:
+        if (file["is_paid"] or file["free_unlock_enabled"]) and not share_completed:
             keyboard.append([
                 InlineKeyboardButton(
                     text=(
                         f"🎁 Buka Gratis • "
-                        f"{progress}/3"
+                        f"{share_progress}/{share_target}"
                     ),
                     callback_data=f"freeopen:{code}"
                 )
@@ -309,6 +305,8 @@ async def free_open(call: CallbackQuery):
             code,
             title,
             price,
+            media_count,
+            is_paid,
             free_unlock_enabled
         FROM files
         WHERE code=$1
@@ -321,45 +319,29 @@ async def free_open(call: CallbackQuery):
             "❌ Code tidak ditemukan.",
             show_alert=True
         )
-    if not file["free_unlock_enabled"]:
+    if not file["free_unlock_enabled"] and not file["is_paid"]:
         return await call.answer(
-            "❌ Buka gratis tidak tersedia untuk code ini.",
+            "❌ Unlock share tidak tersedia untuk code ini.",
             show_alert=True
         )
     # --------------------------------------------------------
-    # CREATE PROGRESS
+    # SHARE PROGRESS
     # --------------------------------------------------------
-    await pool.execute(
-        """
-        INSERT INTO free_code_progress(
-            code,
-            user_id,
-            purchase_count,
-            completed
-        )
-        VALUES($1, $2, 0, FALSE)
-        ON CONFLICT(code, user_id)
-        DO NOTHING
-        """,
-        code,
-        call.from_user.id
+    progress, target, completed = await get_share_status(
+        pool, code, call.from_user.id,
+        is_paid=bool(file["is_paid"]),
+        media_count=int(file["media_count"] or 0),
     )
-    progress = int(
-        await pool.fetchval(
-            """
-            SELECT purchase_count
-            FROM free_code_progress
-            WHERE code=$1
-              AND user_id=$2
-            """,
-            code,
-            call.from_user.id
-        ) or 0
+    await ensure_share_progress(
+        pool, code, call.from_user.id,
+        is_paid=bool(file["is_paid"]),
+        media_count=int(file["media_count"] or 0),
     )
+
     # ========================================================
     # ALREADY UNLOCKED
     # ========================================================
-    if progress >= 3:
+    if completed or progress >= target:
         await call.answer()
         return await call.message.edit_text(
             "🎉 <b>CODE GRATIS TERBUKA</b>\n\n"
@@ -391,13 +373,14 @@ async def free_open(call: CallbackQuery):
     share_url = share_url_for_code(
         me,
         code,
-        file["title"] or code
+        file["title"] or code,
+        call.from_user.id,
     )
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text=f"📤 Bagikan Code • {progress}/3",
+                    text=f"📤 Bagikan Code • {progress}/{target}",
                     url=share_url
                 )
             ],
@@ -423,9 +406,8 @@ async def free_open(call: CallbackQuery):
         "mendapatkan pembeli.\n\n"
         f"🔑 <b>Code:</b> <code>{code}</code>\n\n"
         f"📈 Progress kamu: "
-        f"<b>{progress}/3</b>\n\n"
-        "Setelah 3 aksi berhasil, "
-        "akses gratis akan terbuka.",
+        f"<b>{progress}/{target}</b>\n\n"
+        "Setelah target tercapai, akses akan terbuka.",
         parse_mode="HTML",
         reply_markup=kb
     )
@@ -433,109 +415,64 @@ async def free_open(call: CallbackQuery):
 # ============================================================
 # FREE SHARE / CHECK PROGRESS
 # ============================================================
-@router.callback_query(F.data.startswith("freeshare:"))
+@router.callback_query(F.data.startswith(("freeshare:", "sharecheck:")))
 async def free_share(call: CallbackQuery):
     code = call.data.split(":", 1)[1].strip()
     pool = await get_pool()
-    file = await pool.fetchrow(
+
+    file = await fetchrow(
         """
-        SELECT
-            code,
-            title,
-            free_unlock_enabled
-        FROM files
-        WHERE code=$1
-        LIMIT 1
+        SELECT code,title,media_count,is_paid,free_unlock_enabled
+        FROM files WHERE code=$1 LIMIT 1
         """,
-        code
+        code,
     )
     if not file:
-        return await call.answer(
-            "❌ Code tidak ditemukan.",
-            show_alert=True
-        )
+        return await call.answer("❌ Code tidak ditemukan.", show_alert=True)
+
     if not file["free_unlock_enabled"]:
-        return await call.answer(
-            "❌ Fitur gratis tidak tersedia.",
-            show_alert=True
-        )
-    progress = int(
-        await pool.fetchval(
-            """
-            SELECT purchase_count
-            FROM free_code_progress
-            WHERE code=$1
-              AND user_id=$2
-            """,
-            code,
-            call.from_user.id
-        ) or 0
+        return await call.answer("❌ Fitur unlock tidak tersedia.", show_alert=True)
+
+    progress, target, completed = await get_share_status(
+        pool, code, call.from_user.id,
+        is_paid=bool(file["is_paid"]),
+        media_count=int(file["media_count"] or 0),
     )
-    me = await call.bot.get_me()
-    # ========================================================
-    # ALREADY 3/3
-    # ========================================================
-    if progress >= 3:
-        await call.answer(
-            "🎉 Progress 3/3 sudah penuh!",
-            show_alert=True
-        )
+    await ensure_share_progress(
+        pool, code, call.from_user.id,
+        is_paid=bool(file["is_paid"]),
+        media_count=int(file["media_count"] or 0),
+    )
+
+    if completed or progress >= target:
         return await call.message.edit_text(
-            "🎉 <b>CODE GRATIS TERBUKA</b>\n\n"
-            f"🔑 <code>{code}</code>\n\n"
-            "Sekarang kamu bisa membuka code "
-            "tanpa pembayaran.",
+            "🎉 <b>CODE TERBUKA</b>\n\n"
+            f"🔑 <code>{code}</code>\n"
+            f"📈 Progress: <b>{target}/{target}</b>",
             parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text="📂 Buka Code",
-                            callback_data=f"page:{code}:1"
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            text="⬅️ Marketplace",
-                            callback_data="marketplace"
-                        )
-                    ]
-                ]
-            )
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📂 Buka Code", callback_data=f"page:{code}:1")],
+                [InlineKeyboardButton(text="📤 Open All", callback_data=f"all:{code}")],
+                [InlineKeyboardButton(text="⬅️ Marketplace", callback_data="marketplace")],
+            ]),
         )
-    # ========================================================
-    # CHECK PROGRESS
-    # ========================================================
-    await call.answer(
-        "🔄 Progress akan bertambah ketika "
-        "pembelian berhasil dari referral kamu.",
-        show_alert=True
+
+    me = await call.bot.get_me()
+    url = share_url_for_code(
+        me, code, file["title"] or code, call.from_user.id
     )
-    await call.message.edit_reply_markup(
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text=f"📤 Bagikan Code • {progress}/3",
-                        url=share_url_for_code(
-                            me,
-                            code,
-                            file["title"] or code
-                        )
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="🔄 Cek Progress",
-                        callback_data=f"freeopen:{code}"
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="⬅️ Kembali",
-                        callback_data=f"market:{code}"
-                    )
-                ]
-            ]
-        )
+    label = "PAID" if file["is_paid"] else "FREE"
+    await call.message.edit_text(
+        f"🔐 <b>UNLOCK {label}</b>\n\n"
+        "Bagikan code ini. Progress bertambah hanya saat "
+        "member baru benar-benar membuka bot melalui link share.\n\n"
+        f"📈 Progress: <b>{progress}/{target}</b>\n"
+        f"👥 Target: <b>{target} member baru</b>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"📤 Bagikan Code • {progress}/{target}", url=url)],
+            [InlineKeyboardButton(text="🔄 Cek Progress", callback_data=f"sharecheck:{code}")],
+            [InlineKeyboardButton(text="⬅️ Kembali", callback_data=f"market:{code}")],
+        ]),
     )
+    await call.answer("🔄 Progress diperbarui.")

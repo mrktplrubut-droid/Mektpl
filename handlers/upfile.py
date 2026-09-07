@@ -26,6 +26,7 @@ from config import CHANNEL_ID, STORAGE_CHANNEL_ID
 from database import get_pool
 from keyboards.join import join_kb
 from utils.force_sub import check_force_sub
+from utils.share_unlock import telegram_setting
 
 
 router = Router()
@@ -43,11 +44,11 @@ UPDATE_DELAY = 0.7
 
 # Delay kecil setelah copy berhasil.
 # Kecepatan utama didapat dari tidak memakai global copy lock.
-COPY_DELAY = 0.05
+COPY_DELAY = 1.0
 
 # Maksimal copy storage bersamaan untuk seluruh bot.
 # 2 = aman dan cukup cepat.
-STORAGE_CONCURRENCY = 2
+STORAGE_CONCURRENCY = 1
 
 # Channel review paid file.
 REVIEW_CHANNEL_ID = -1003984536150
@@ -72,6 +73,31 @@ _user_lock_refs: Dict[int, int] = {}
 _storage_semaphore = asyncio.Semaphore(
     STORAGE_CONCURRENCY
 )
+
+_channel_send_lock = asyncio.Lock()
+_last_channel_send = 0.0
+CHANNEL_SEND_DELAY = 1.0
+
+
+async def safe_channel_send(bot, chat_id, text, **kwargs):
+    """Serialize update-channel posts and keep a conservative interval."""
+    global _last_channel_send
+    async with _channel_send_lock:
+        configured_delay = await telegram_setting(
+            "telegram_channel_delay",
+            CHANNEL_SEND_DELAY,
+        )
+        wait = configured_delay - (time.monotonic() - _last_channel_send)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        while True:
+            try:
+                msg = await bot.send_message(chat_id=chat_id, text=text, **kwargs)
+                _last_channel_send = time.monotonic()
+                return msg
+            except TelegramRetryAfter as exc:
+                await asyncio.sleep(max(float(exc.retry_after), 1.0) + 0.5)
+
 
 
 # =========================================================

@@ -10,6 +10,38 @@ async def lang_for(user_id):
     pool=await get_pool()
     return (await pool.fetchval("SELECT language FROM users WHERE user_id=$1", user_id)) or "id"
 
+
+@router.callback_query(F.data == "vip_creator")
+async def vip_creator_menu(callback: CallbackQuery):
+    lang = await lang_for(callback.from_user.id)
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    idn = lang == "id"
+    await callback.message.edit_text(
+        "💎 <b>VIP / KREATOR</b>\n\n"
+        "Pilih layanan yang ingin kamu buka." if idn
+        else "💎 <b>VIP / CREATOR</b>\n\nChoose a service.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="💎 VIP",
+                    callback_data="vvip",
+                ),
+                InlineKeyboardButton(
+                    text="🎨 Kreator" if idn else "🎨 Creator",
+                    callback_data="creator",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Kembali" if idn else "⬅️ Back",
+                    callback_data="home",
+                )
+            ],
+        ]),
+    )
+    await callback.answer()
+
 @router.callback_query(F.data == "menu_lainnya")
 async def menu_lainnya(callback: CallbackQuery):
     lang=await lang_for(callback.from_user.id)

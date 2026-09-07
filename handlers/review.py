@@ -11,6 +11,7 @@ from aiogram.types import (
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from database import get_pool
+from utils.share_unlock import share_url, get_share_status
 router = Router()
 # ============================================================================
 # CONSTANTS
@@ -614,10 +615,12 @@ async def share_code(
     # ------------------------------------------------------------------------
     # DEEP LINK
     # ------------------------------------------------------------------------
-    target = (
-        f"https://t.me/{bot_username}"
-        f"?start={quote(code)}"
-    )
+    target = share_url(
+        bot_username,
+        code,
+        call.from_user.id,
+        row["title"] or code,
+    ).split("&text=", 1)[0]
     share_text_id = (
         "🤖 Coba code Telegram ini dari Marketplace!"
     )
@@ -636,8 +639,7 @@ async def share_code(
         text = (
             "📤 <b>SHARE CODE</b>\n\n"
             "Share this code with friends or potential buyers.\n"
-            "Every successful purchase increases the 3-step free-unlock "
-            "progress for this code."
+            "Progress increases when a genuinely new member opens the bot from this link."
         )
         share_now = "📤 Share Now"
         progress = "🎁 Check Progress"
@@ -646,8 +648,7 @@ async def share_code(
         text = (
             "📤 <b>BAGIKAN CODE</b>\n\n"
             "Bagikan code ini ke teman atau calon pembeli.\n"
-            "Setiap pembelian berhasil akan menambah progress "
-            "gratis 3 tahap untuk code ini."
+            "Progress bertambah saat member baru membuka bot melalui link ini."
         )
         share_now = "📤 Bagikan Sekarang"
         progress = "🎁 Cek Progress"

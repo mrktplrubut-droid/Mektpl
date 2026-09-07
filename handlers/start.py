@@ -13,6 +13,7 @@ from database import get_pool
 from utils.user_lang import get_user_language
 from utils.force_sub import get_missing_channels
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from utils.share_unlock import record_new_member_open
 
 
 router = Router()
@@ -147,6 +148,52 @@ async def process_start(
         tg_user.username,
         tg_user.full_name
     )
+
+    # =====================================================
+    # CODE SHARE DEEP-LINK
+    # s_<code>_<sharer_id>
+    # Award one point only for a genuinely new bot member.
+    # This is done before language/force-sub screens so the event
+    # cannot be lost during the onboarding flow.
+    # =====================================================
+    if is_new_user and start_arg.startswith("s_"):
+        try:
+            payload_parts = start_arg.split("_", 2)
+            if len(payload_parts) == 3:
+                shared_code = payload_parts[1].strip().lower()
+                sharer_id = int(payload_parts[2])
+                shared_file = await pool.fetchrow(
+                    """
+                    SELECT code, owner_id, media_count, is_paid
+                    FROM files
+                    WHERE LOWER(TRIM(code))=LOWER(TRIM($1))
+                    LIMIT 1
+                    """,
+                    shared_code,
+                )
+                if shared_file and int(shared_file["owner_id"] or 0) == sharer_id:
+                    awarded = await record_new_member_open(
+                        pool,
+                        shared_file["code"],
+                        sharer_id,
+                        user_id,
+                        media_count=int(shared_file["media_count"] or 0),
+                        is_paid=bool(shared_file["is_paid"]),
+                    )
+                    if awarded:
+                        logging.info(
+                            "CODE SHARE PROGRESS +1 | code=%s | owner=%s | new_member=%s",
+                            shared_file["code"], sharer_id, user_id,
+                        )
+                    # Continue onboarding and then open the shared code.
+                    start_arg = shared_file["code"]
+                    if state is not None:
+                        await state.update_data(start_payload=start_arg)
+        except Exception:
+            logging.exception(
+                "CODE SHARE DEEP LINK ERROR | user=%s | payload=%s",
+                user_id, start_arg,
+            )
 
     # Always show language selection from /start.
     # Existing language is only used after the user confirms it.

@@ -4,6 +4,7 @@ import time
 from collections import defaultdict
 
 from aiogram import Router, F
+from aiogram.exceptions import TelegramRetryAfter
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardMarkup,
@@ -17,6 +18,7 @@ from aiogram.types import (
 
 from database import get_pool
 from config import STORAGE_CHANNEL_ID
+from utils.share_unlock import get_share_status, ensure_share_progress, gate_message
 
 
 router = Router()
@@ -130,18 +132,6 @@ async def send_page(bot, chat_id, user_id, code, page=1):
            WHERE user_id=$1 AND code=$2 AND completed=TRUE)""",
         user_id, code
     ) or False
-    if bool(file["is_paid"]) and not (creator_access or owner_access or purchase_access or free_access):
-        await bot.send_message(
-            chat_id,
-            "🔒 <b>FILE BERBAYAR</b>\n\n"
-            f"💰 Harga: <b>Rp {int(file['price'] or 0):,}</b>\n\n"
-            "Silakan beli file untuk membukanya.",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="💳 Beli", callback_data=f"pay:{code}")
-            ]])
-        )
-        return False
 
     if page == 1:
         viewed = await pool.fetchrow(
@@ -180,6 +170,37 @@ async def send_page(bot, chat_id, user_id, code, page=1):
 
         return False
 
+    # SHARE-TO-UNLOCK GATE.
+    # Owner, purchase, creator and VIP/VVIP bypass the gate.
+    privileged = bool(
+        owner_access
+        or purchase_access
+        or creator_access
+        or user_level in ("vip", "vvip")
+    )
+    share_current, share_target, share_completed = await get_share_status(
+        pool, code, user_id,
+        is_paid=bool(file["is_paid"]),
+        media_count=len(media),
+    )
+    if not privileged and not share_completed:
+        await ensure_share_progress(
+            pool, code, user_id,
+            is_paid=bool(file["is_paid"]),
+            media_count=len(media),
+        )
+        text, kb = await gate_message(
+            bot, chat_id,
+            code=code,
+            title=str(file["title"] or code),
+            progress=share_current,
+            target=share_target,
+            is_paid=bool(file["is_paid"]),
+        )
+        await bot.send_message(
+            chat_id, text, parse_mode="HTML", reply_markup=kb
+        )
+        return False
 
     total_page = (
         len(media) + PAGE_SIZE - 1
@@ -282,78 +303,55 @@ async def send_page(bot, chat_id, user_id, code, page=1):
 
 
     # =========================
-    # SEND MEDIA
+    # SEND MEDIA - SEQUENTIAL
     # =========================
-
+    # Do not use send_media_group here: it sends up to 10 media in one burst.
+    # Each item is sent separately with a 3-second interval.
+    sent_count = 0
     try:
+        for item in chunk:
+            file_id = item.get("file_id") if isinstance(item, dict) else None
+            if not file_id:
+                continue
 
-        if len(album) == 1:
-
-            item = chunk[0]
-
-            file_id = item.get("file_id")
-            media_type = item.get(
-                "type",
-                "document"
-            ).lower()
-
-
+            media_type = normalize_type(item.get("type"))
             if media_type == "photo":
-
                 await bot.send_photo(
-                    chat_id,
-                    file_id,
-                    caption=caption,
-                    protect_content=protect
+                    chat_id, file_id,
+                    caption=caption if sent_count == 0 else None,
+                    protect_content=protect,
                 )
-
-
             elif media_type == "video":
-
                 await bot.send_video(
-                    chat_id,
-                    file_id,
-                    caption=caption,
-                    protect_content=protect
+                    chat_id, file_id,
+                    caption=caption if sent_count == 0 else None,
+                    protect_content=protect,
                 )
-
-
             else:
-
                 await bot.send_document(
-                    chat_id,
-                    file_id,
-                    caption=caption,
-                    protect_content=protect
+                    chat_id, file_id,
+                    caption=caption if sent_count == 0 else None,
+                    protect_content=protect,
                 )
 
+            sent_count += 1
+            if sent_count < len(chunk):
+                await asyncio.sleep(3.0)
 
-        else:
+        if sent_count == 0:
+            return False
 
-            await bot.send_media_group(
-                chat_id,
-                album,
-                protect_content=protect
-            )
+        if protect:
+            await bot.send_message(chat_id, "🔒 File dilindungi")
 
-
-            if protect:
-
-                await bot.send_message(
-                    chat_id,
-                    "🔒 File dilindungi"
-                )
-
-
+    except TelegramRetryAfter as exc:
+        wait_for = max(float(exc.retry_after), 1.0) + 0.5
+        await asyncio.sleep(wait_for)
+        # Do not replay the whole page after a flood response.
+        return sent_count > 0
     except Exception as e:
-
-        print(
-            "SEND MEDIA ERROR",
-            e
-        )
-
-        return False
-
+        print("SEND MEDIA ERROR", e)
+        return sent_count > 0
 
     # =========================
     # NAVIGATION
@@ -385,7 +383,7 @@ async def send_page(bot, chat_id, user_id, code, page=1):
         chat_id,
         (
             f"📦 PAGE {page}/{total_page}\n"
-            f"✅ {len(album)}/{len(chunk)} Media\n\n"
+            f"✅ {sent_count}/{len(chunk)} Media\n\n"
             "❤️ Simpan ke favorit atau ⭐ berikan rating"
         ),
         reply_markup=keyboard
