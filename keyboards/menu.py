@@ -43,12 +43,12 @@ def home_kb(
             ],
             [
                 _button(
-                    "📂 Menu Lainnya" if idn else "📂 More Menu",
-                    callback_data="menu_lainnya",
+                    "💎 VIP / 🎨 Kreator" if idn else "💎 VIP / 🎨 Creator",
+                    callback_data="vip_creator",
                 ),
                 _button(
-                    "❓ Bantuan" if idn else "❓ Help",
-                    callback_data="help",
+                    "📂 Menu Lainnya" if idn else "📂 More Menu",
+                    callback_data="menu_lainnya",
                 ),
             ],
         ]
