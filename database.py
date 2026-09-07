@@ -187,6 +187,16 @@ async def init_db():
         ON CONFLICT (key) DO NOTHING;
         """)
 
+        await conn.execute("""
+        INSERT INTO settings (key, value) VALUES
+            ('telegram_user_send_delay','3'),
+            ('telegram_storage_delay','1'),
+            ('telegram_channel_delay','1'),
+            ('telegram_storage_concurrency','1'),
+            ('telegram_safety_enabled','on')
+        ON CONFLICT (key) DO NOTHING;
+        """)
+
         # ========================
         # WALLETS
         # ========================
@@ -317,6 +327,40 @@ async def init_db():
             completed_at TIMESTAMP,
             UNIQUE(code, user_id)
         );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS code_share_progress (
+            id BIGSERIAL PRIMARY KEY,
+            code TEXT NOT NULL,
+            user_id BIGINT NOT NULL,
+            target INT NOT NULL DEFAULT 1,
+            progress INT NOT NULL DEFAULT 0,
+            is_paid BOOLEAN NOT NULL DEFAULT FALSE,
+            completed BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            completed_at TIMESTAMPTZ,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE(code,user_id)
+        );
+        """)
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS code_share_events (
+            id BIGSERIAL PRIMARY KEY,
+            code TEXT NOT NULL,
+            owner_id BIGINT NOT NULL,
+            new_member_id BIGINT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE(code,owner_id,new_member_id)
+        );
+        """)
+        await conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_code_share_progress_user
+        ON code_share_progress(user_id);
+        """)
+        await conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_code_share_progress_code
+        ON code_share_progress(code);
         """)
 
         # ========================
