@@ -30,4 +30,4 @@ Use the project's existing `.env`/Railway variables. Do not put secrets in `data
 
 
 ## Creator Upgrade Manual QR
-Tambahkan environment variable `CREATOR_UPGRADE_PRICE` (contoh `50000`) untuk harga upgrade Creator. Pastikan `MANUAL_QR_FILE_ID` sudah berisi file_id QRIS manual yang benar. Jalankan `MIGRATION_CREATOR_UPGRADE_MANUAL.sql` sekali di database.
+Harga upgrade Creator dapat diatur melalui `CREATOR_UPGRADE_PRICE`. Untuk project baru, gunakan `database.sql` sebagai satu-satunya SQL master.

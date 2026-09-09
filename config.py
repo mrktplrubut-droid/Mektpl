@@ -68,6 +68,13 @@ BAYARGG_WEBHOOK_SECRET = os.getenv(
 ).strip()
 
 
+BAYARGG_ENABLED = bool(BAYARGG_API_KEY)
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+BAYARGG_WEBHOOK_URL = (
+    f"{PUBLIC_BASE_URL}/bayargg/webhook" if PUBLIC_BASE_URL else ""
+)
+
+
 # ------------------------------------------------------------
 # CASHI.ID
 # ------------------------------------------------------------

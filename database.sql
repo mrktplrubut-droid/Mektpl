@@ -515,3 +515,101 @@ COMMIT;
 -- NOTIFICATION_CHANNEL_URL=https://t.me/...
 -- TRANSACTION_CHANNEL_URL=https://t.me/...
 -- ALL_CODE_CHANNEL_URL=https://t.me/...
+
+
+-- ============================================================
+-- MEKTPL 2026-09-09 UX / TELEGRAM SAFETY / MARKETPLACE UPGRADE
+-- Append to the production schema. Idempotent.
+-- ============================================================
+BEGIN;
+
+-- Durable per-media metadata. The existing files.media JSON remains compatible.
+ALTER TABLE medias ADD COLUMN IF NOT EXISTS storage_chat_id BIGINT;
+ALTER TABLE medias ADD COLUMN IF NOT EXISTS storage_message_id BIGINT;
+ALTER TABLE medias ADD COLUMN IF NOT EXISTS storage_ready BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE medias ADD COLUMN IF NOT EXISTS media_code TEXT;
+ALTER TABLE medias ADD COLUMN IF NOT EXISTS bot_username TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_medias_code_position
+ON medias(code, position);
+
+-- Reactions and marketplace aggregates.
+ALTER TABLE files ADD COLUMN IF NOT EXISTS like_count BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE files ADD COLUMN IF NOT EXISTS dislike_count BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE files ADD COLUMN IF NOT EXISTS rating_sum BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE files ADD COLUMN IF NOT EXISTS rating_count BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE files ADD COLUMN IF NOT EXISTS marketplace_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE files ADD COLUMN IF NOT EXISTS search_text TEXT;
+
+CREATE TABLE IF NOT EXISTS file_user_reactions (
+    file_code TEXT NOT NULL,
+    user_id BIGINT NOT NULL,
+    reaction TEXT NOT NULL CHECK (reaction IN ('like','dislike')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(file_code,user_id)
+);
+
+CREATE TABLE IF NOT EXISTS file_user_favorites (
+    file_code TEXT NOT NULL,
+    user_id BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(file_code,user_id)
+);
+
+CREATE TABLE IF NOT EXISTS file_user_ratings (
+    file_code TEXT NOT NULL,
+    user_id BIGINT NOT NULL,
+    rating SMALLINT NOT NULL CHECK (rating BETWEEN 1 AND 5),
+    review TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(file_code,user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_file_reactions_code ON file_user_reactions(file_code);
+CREATE INDEX IF NOT EXISTS idx_file_favorites_user ON file_user_favorites(user_id);
+CREATE INDEX IF NOT EXISTS idx_file_ratings_code ON file_user_ratings(file_code);
+
+-- Make each media independently addressable.
+CREATE TABLE IF NOT EXISTS media_codes (
+    media_code TEXT PRIMARY KEY,
+    file_code TEXT NOT NULL,
+    media_id BIGINT,
+    position INT NOT NULL,
+    bot_username TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(file_code,position)
+);
+CREATE INDEX IF NOT EXISTS idx_media_codes_file ON media_codes(file_code);
+
+-- Provider-specific payment data. Both gateways can exist simultaneously.
+ALTER TABLE file_purchases ADD COLUMN IF NOT EXISTS provider TEXT;
+ALTER TABLE file_purchases ADD COLUMN IF NOT EXISTS provider_invoice TEXT;
+ALTER TABLE file_purchases ADD COLUMN IF NOT EXISTS payment_method TEXT;
+CREATE INDEX IF NOT EXISTS idx_file_purchases_provider_invoice
+ON file_purchases(provider,provider_invoice);
+
+-- Telegram safety settings.
+INSERT INTO settings(key,value) VALUES
+ ('telegram_user_send_delay','2'),
+ ('telegram_storage_delay','1'),
+ ('telegram_channel_delay','1'),
+ ('telegram_storage_concurrency','1'),
+ ('telegram_safety_enabled','on'),
+ ('telegram_open_all_batch','10'),
+ ('telegram_open_all_pause','1'),
+ ('telegram_page_size','10')
+ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value;
+
+-- Search helpers.
+CREATE INDEX IF NOT EXISTS idx_files_code_lower ON files(LOWER(code));
+CREATE INDEX IF NOT EXISTS idx_files_marketplace ON files(marketplace_enabled,created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_files_search_text ON files USING gin(to_tsvector('simple',coalesce(search_text,'')));
+
+-- Keep search text synchronized when absent.
+UPDATE files
+SET search_text = concat_ws(' ',coalesce(code,''),coalesce(title,''),coalesce(creator,''))
+WHERE search_text IS NULL OR search_text='';
+
+COMMIT;

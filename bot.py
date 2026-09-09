@@ -98,6 +98,7 @@ from handlers.pay import router as pay_router
 from handlers.cancel import router as cancel_router
 # CASHI PAYMENT
 from handlers.cashi import router as cashi_router
+from handlers.bayargg_payment import router as bayargg_payment_router
 # WITHDRAW
 from handlers.withdraw import (
     withdraw_router,
@@ -171,6 +172,7 @@ dp.include_router(pay_router)
 # CASHI
 # Semua callback payment Cashi ditangani oleh handlers.cashi
 dp.include_router(cashi_router)
+dp.include_router(bayargg_payment_router)
 dp.include_router(cancel_router)
 # ------------------------------------------------------------
 # WITHDRAW
